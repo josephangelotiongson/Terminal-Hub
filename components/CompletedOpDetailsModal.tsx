@@ -13,7 +13,7 @@ interface CompletedOpDetailsModalProps {
 const FinancialSummary: React.FC<{ op: Operation }> = ({ op }) => {
     const { settings } = useContext(AppContext)!;
     const { throughputValue, servicesValue, totalValue } = calculateOperationValue(op, settings);
-    const allServices = op.transferPlan.flatMap(tp => tp.transfers.flatMap(t => t.specialServices));
+    const allServices = op.transferPlan.flatMap(tp => tp.transfers.flatMap(t => t.specialServices || []));
 
     return (
         <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
@@ -146,12 +146,18 @@ const CompletedOpDetailsModal: React.FC<CompletedOpDetailsModalProps> = ({ isOpe
 
                  <div>
                     <h4 className="font-semibold text-base text-text-primary mb-2">Full Activity History</h4>
-                    <div className="activity-log max-h-48 overflow-y-auto border p-2 rounded-md">
+                    <div className="space-y-2 max-h-48 overflow-y-auto border p-2 rounded-md bg-slate-50">
                         {operation.activityHistory.slice().reverse().map((log, index) => (
-                             <div key={index} className="activity-log-item !text-xs">
-                                <span className="time">{new Date(log.time).toLocaleString()}</span>
-                                <span className="flex-1">{log.action}: {log.details}</span>
-                                <span className="user">({log.user})</span>
+                            <div key={index} className="text-xs p-1.5 rounded bg-white shadow-sm">
+                                <div className="flex justify-between items-baseline">
+                                    <div className="flex items-baseline min-w-0">
+                                        <span className="font-semibold text-slate-700 truncate">
+                                            {log.action.replace(/_/g, ' ')} by {log.user}
+                                        </span>
+                                    </div>
+                                    <span className="text-slate-400 flex-shrink-0 ml-2">{new Date(log.time).toLocaleString()}</span>
+                                </div>
+                                <p className="text-slate-600 whitespace-pre-wrap mt-1">{log.details}</p>
                             </div>
                         ))}
                     </div>

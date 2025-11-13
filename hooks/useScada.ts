@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Operation, ScadaData, SOFItem } from '../types';
 import { SOF_EVENTS_MODALITY, VESSEL_COMMODITY_EVENTS } from '../constants';
+// FIX: Corrected typo in imported function name from deriveTruckStatusFromSof to deriveStatusFromSof.
+import { deriveStatusFromSof } from '../utils/helpers';
 
 const useScada = (activeOp: Operation | undefined, setOperations: React.Dispatch<React.SetStateAction<Operation[]>>) => {
     const [scadaData, setScadaData] = useState<ScadaData>({});
@@ -32,7 +34,7 @@ const useScada = (activeOp: Operation | undefined, setOperations: React.Dispatch
                 const opIndex = newOps.findIndex(o => o.id === activeOp.id);
                 if (opIndex === -1) return prevOps;
 
-                const currentOp = { ...newOps[opIndex] };
+                let currentOp = { ...newOps[opIndex] };
                 currentOp.transferPlan = currentOp.transferPlan.map(line => {
                     const isPumping = linesToSimulate[line.infrastructureId];
                     const flowRate = isPumping ? (line.infrastructureId.startsWith('L') ? 1200 : line.infrastructureId.startsWith('Bay') ? 150 : 300) + (Math.random() * 50 - 25) : 0;
@@ -93,6 +95,13 @@ const useScada = (activeOp: Operation | undefined, setOperations: React.Dispatch
                     }
                     return line;
                 });
+                
+                // After modification, derive new status if it's a truck
+                const newStatuses = deriveStatusFromSof(currentOp);
+                if (newStatuses) {
+                    currentOp = { ...currentOp, ...newStatuses };
+                }
+
                 newOps[opIndex] = currentOp;
                 return newOps;
             });

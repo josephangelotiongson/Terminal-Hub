@@ -11,8 +11,8 @@ const TankLevelIndicator: React.FC<TankLevelIndicatorProps> = ({ tankName, trans
     const context = useContext(AppContext);
     if (!context) return null;
 
-    const { currentTerminalSettings } = context;
-    const tankData = currentTerminalSettings.masterTanks?.[tankName];
+    const { tanks } = context;
+    const tankData = tanks?.[tankName];
 
     if (!tankData) {
         return <div className="text-sm text-red-600">Tank '{tankName}' not found in master data.</div>;

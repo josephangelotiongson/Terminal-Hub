@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useContext } from 'react';
 import Modal from './Modal';
 import { Operation } from '../types';
@@ -7,6 +8,7 @@ interface ReworkModalProps {
     isOpen: boolean;
     onClose: () => void;
     operation: Operation | null;
+    priority: 'high' | 'normal';
 }
 
 const REWORK_REASONS = [
@@ -17,21 +19,27 @@ const REWORK_REASONS = [
     "Other"
 ];
 
-const ReworkModal: React.FC<ReworkModalProps> = ({ isOpen, onClose, operation }) => {
+const ReworkModal: React.FC<ReworkModalProps> = ({ isOpen, onClose, operation, priority }) => {
     const context = useContext(AppContext);
     const [reason, setReason] = useState(REWORK_REASONS[0]);
     const [notes, setNotes] = useState('');
 
     useEffect(() => {
-        if (isOpen) {
+        if (isOpen && operation) {
             setReason(REWORK_REASONS[0]);
-            setNotes('');
+            // Pre-fill notes with weight info if available and reason is related to load
+            const loadedWeight = operation.transferPlan?.[0]?.transfers?.[0]?.loadedWeight;
+            if (loadedWeight) {
+                setNotes(`Recorded Weight: ${loadedWeight} T. `);
+            } else {
+                setNotes('');
+            }
         }
-    }, [isOpen]);
+    }, [isOpen, operation]);
 
     const handleSave = () => {
         if (!operation || !context) return;
-        context.reworkTruckOperation(operation.id, reason, notes);
+        context.reworkTruckOperation(operation.id, reason, notes, priority);
         onClose();
     };
 

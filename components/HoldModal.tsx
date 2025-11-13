@@ -28,7 +28,7 @@ const HOLD_REASONS = [
 
 const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialData }) => {
     const context = useContext(AppContext);
-    const { currentTerminalSettings, currentUser } = context!;
+    const { currentTerminalSettings, currentUser, simulatedTime } = context!;
     
     const [resource, setResource] = useState('');
     const [tank, setTank] = useState('');
@@ -40,16 +40,21 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
     const allInfrastructure = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {});
     const connectedTanks = currentTerminalSettings.infrastructureTankMapping?.[resource] || [];
 
+    const canCreate = ['Operations Lead', 'Operator'].includes(currentUser.role);
+    const canEdit = ['Operations Lead', 'Terminal Planner', 'Maintenance Planner'].includes(currentUser.role) || initialData.user === currentUser.name;
+    const canSave = initialData.id ? canEdit : canCreate;
+
+
     useEffect(() => {
         if (isOpen) {
             setResource(initialData.resource || '');
             setTank(initialData.tank || '');
-            setStartTime(initialData.startTime || new Date().toISOString());
-            setEndTime(initialData.endTime || new Date(new Date().getTime() + 60 * 60 * 1000).toISOString());
+            setStartTime(initialData.startTime || simulatedTime.toISOString());
+            setEndTime(initialData.endTime || new Date(simulatedTime.getTime() + 60 * 60 * 1000).toISOString());
             setReason(initialData.reason && HOLD_REASONS.includes(initialData.reason) ? initialData.reason : "Other (Specify)");
             setCustomReason(initialData.reason && !HOLD_REASONS.includes(initialData.reason) ? initialData.reason : "");
         }
-    }, [isOpen, initialData]);
+    }, [isOpen, initialData, simulatedTime]);
     
     useEffect(() => {
         // Reset tank if the selected resource doesn't have it
@@ -59,6 +64,10 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
     }, [resource, tank, connectedTanks]);
 
     const handleSave = () => {
+        if (!canSave) {
+            alert("Permission Denied: You cannot schedule or edit outages.");
+            return;
+        }
         if (!resource) {
             alert("Please select an infrastructure resource.");
             return;
@@ -99,7 +108,12 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
             footer={
                 <>
                     <button onClick={onClose} className="btn-secondary px-4 py-2 text-sm rounded-md">Cancel</button>
-                    <button onClick={handleSave} className="btn-primary px-4 py-2 text-sm rounded-md">
+                    <button 
+                        onClick={handleSave} 
+                        className="btn-primary px-4 py-2 text-sm rounded-md"
+                        disabled={!canSave}
+                        title={!canSave ? "Permission Denied" : ""}
+                    >
                         {isMaintenanceUser ? 'Submit Request' : 'Save'}
                     </button>
                 </>

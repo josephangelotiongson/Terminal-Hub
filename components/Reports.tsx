@@ -5,6 +5,15 @@ import WorkspaceSearch from './WorkspaceSearch';
 import ModalityFilter from './ModalityFilter';
 import { calculateOperationValue, formatCurrency, formatInfraName, downloadCsv, formatDateTime } from '../utils/helpers';
 
+const getIcon = (modality: Modality): string => {
+    switch (modality) {
+        case 'vessel': return 'fa-ship';
+        case 'truck': return 'fa-truck';
+        case 'rail': return 'fa-train';
+        default: return 'fa-question-circle';
+    }
+};
+
 // --- CHART COMPONENTS (Defined within Reports.tsx for simplicity) ---
 
 const TRUCK_CYCLE_TIME_STEPS = [
@@ -744,7 +753,15 @@ const Reports: React.FC = () => {
             {/* Content Area */}
             <div className="p-4 sm:p-6 space-y-6 relative z-0">
                  <div className="pl-1 flex justify-between items-center">
-                    <h2 className="text-2xl font-bold text-brand-dark">{reportTitles[reportType]} {reportType !== 'downtime' ? `- ${modalityTitle}` : ''}</h2>
+                    <h2 className="text-2xl font-bold text-brand-dark flex items-center gap-x-3">
+                        <span>{reportTitles[reportType]}</span>
+                        {reportType !== 'downtime' && (
+                            <span className="flex items-center gap-x-2 text-text-secondary" title={modalityTitle}>
+                                <span>-</span>
+                                <i className={`fas ${getIcon(modalityForReport)}`}></i>
+                            </span>
+                        )}
+                    </h2>
                     {reportType === 'revenue' && (
                         <div className="card p-3 bg-green-100">
                             <p className="text-sm font-semibold text-green-700">Total Revenue (Filtered)</p>

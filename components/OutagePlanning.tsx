@@ -3,7 +3,7 @@ import { AppContext } from '../context/AppContext';
 import { Hold, OutageStatus } from '../types';
 import HoldModal from './HoldModal';
 import InputModal from './InputModal';
-import { formatDateTime, formatInfraName } from '../utils/helpers';
+import { formatDateTime, formatInfraName, naturalSort } from '../utils/helpers';
 import TerminalMap from './TerminalMap';
 
 const OutagePlanning: React.FC = () => {
@@ -18,7 +18,7 @@ const OutagePlanning: React.FC = () => {
 
     const allInfrastructure = useMemo(() => {
         const infraMap = currentTerminalSettings.infrastructureModalityMapping || {};
-        return Object.keys(infraMap).sort();
+        return Object.keys(infraMap).sort(naturalSort);
     }, [currentTerminalSettings]);
 
     const sortedHolds = useMemo(() => {

@@ -1,7 +1,8 @@
 import React, { useContext, useMemo, useState } from 'react';
 import { AppContext } from '../context/AppContext';
 import { AppSettings, Modality } from '../types';
-import ConfirmModal from './ConfirmModal'; // Import the new component
+import ConfirmModal from './ConfirmModal';
+import { formatInfraName, naturalSort, createDocklineToWharfMap } from '../utils/helpers';
 
 type ConfigView = 'compatibility' | 'mappings' | 'infra-mappings' | 'infra-modality-mappings' | 'contracts';
 
@@ -100,7 +101,6 @@ const TankSelector: React.FC<{ selectedTanks: string[]; onChange: (tanks: string
     );
 };
 
-
 const CustomerMappings: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return null;
@@ -112,7 +112,6 @@ const CustomerMappings: React.FC = () => {
     
     const handleSettingChange = (key: string, value: any) => {
         setSettings(prev => {
-// FIX: Added type assertion to JSON.parse for type safety.
             const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
             (newSettings[selectedTerminal] as any)[key] = value;
             return newSettings;
@@ -209,17 +208,28 @@ const CustomerMappings: React.FC = () => {
                                     )}
                                 </tr>
                             ))}
-                            {/* Add New Row */}
                             <tr className="bg-slate-50">
-                                <td className="p-2"><select value={formState.customer} onChange={e => setFormState(f => ({...f, customer: e.target.value, product: '', tanks: []}))} className="!py-1 !px-2 w-full"><option value="">Select Customer</option>{currentTerminalSettings.masterCustomers.map(c => <option key={c} value={c}>{c}</option>)}</select></td>
-                                <td className="p-2"><select value={formState.product} onChange={e => setFormState(f => ({...f, product: e.target.value}))} className="!py-1 !px-2 w-full" disabled={!formState.customer}><option value="">Select Product</option>{settings.masterProducts.map(p => <option key={p} value={p}>{p}</option>)}</select></td>
+                                <td className="p-2">
+                                    <select value={formState.customer} onChange={e => setFormState(f => ({...f, customer: e.target.value, product: '', tanks: []}))} className="!py-1 !px-2 w-full">
+                                        <option value="">New Customer...</option>
+                                        {currentTerminalSettings.masterCustomers.map(c => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                </td>
+                                <td className="p-2">
+                                    <select value={formState.product} onChange={e => setFormState(f => ({...f, product: e.target.value, tanks: []}))} className="!py-1 !px-2 w-full" disabled={!formState.customer}>
+                                        <option value="">New Product...</option>
+                                        {settings.masterProducts.map(p => <option key={p} value={p}>{p}</option>)}
+                                    </select>
+                                </td>
                                 <td className="p-2">
                                     <TankSelector 
                                         selectedTanks={formState.tanks} 
                                         onChange={tanks => setFormState(f => ({ ...f, tanks }))}
                                     />
                                 </td>
-                                <td className="p-2 text-right"><button onClick={handleAdd} disabled={editingIndex !== null} className="btn-primary !py-1 !px-2">Add</button></td>
+                                <td className="p-2 text-right">
+                                    <button onClick={handleAdd} className="btn-primary !py-1 !px-2 text-xs">Add</button>
+                                </td>
                             </tr>
                         </tbody>
                     </table>
@@ -229,54 +239,78 @@ const CustomerMappings: React.FC = () => {
     );
 };
 
-const InfrastructureMappings: React.FC = () => {
+const InfraTankMappings: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return null;
 
     const { settings, setSettings, selectedTerminal, currentTerminalSettings } = context;
+    const [editingInfra, setEditingInfra] = useState<string | null>(null);
+    const [selectedTanks, setSelectedTanks] = useState<string[]>([]);
+    
+    const infraMapping = currentTerminalSettings.infrastructureTankMapping || {};
+    const docklineToWharfMap = createDocklineToWharfMap(currentTerminalSettings);
+    const allInfrastructure = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {}).sort(naturalSort);
 
-    const allInfrastructure = useMemo(() => {
-        const infra = new Set([
-            ...Object.keys(currentTerminalSettings.docklines || {}),
-            ...Object.keys(currentTerminalSettings.assetHolds || {})
-        ]);
-        return Array.from(infra).sort();
-    }, [currentTerminalSettings]);
+    const handleEdit = (infraId: string) => {
+        setEditingInfra(infraId);
+        setSelectedTanks(infraMapping[infraId] || []);
+    };
 
-    const handleMappingChange = (infraId: string, tanks: string[]) => {
+    const handleCancel = () => {
+        setEditingInfra(null);
+        setSelectedTanks([]);
+    };
+
+    const handleSave = () => {
+        if (!editingInfra) return;
         setSettings(prev => {
             const newSettings = JSON.parse(JSON.stringify(prev));
-            if (!newSettings[selectedTerminal].infrastructureTankMapping) {
-                newSettings[selectedTerminal].infrastructureTankMapping = {};
-            }
-            newSettings[selectedTerminal].infrastructureTankMapping[infraId] = tanks;
+            newSettings[selectedTerminal].infrastructureTankMapping[editingInfra] = selectedTanks;
             return newSettings;
         });
+        handleCancel();
     };
 
     return (
         <div className="card p-6">
-            <p className="text-sm text-text-secondary mb-4">Define which tanks are physically connected to each piece of infrastructure.</p>
+            <p className="text-sm text-text-secondary mb-4">Map which tanks are physically connected to each piece of infrastructure.</p>
             <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                     <thead className="text-left bg-slate-50">
                         <tr>
-                            <th className="p-2 w-1/4">Infrastructure</th>
+                            <th className="p-2">Infrastructure</th>
                             <th className="p-2">Connected Tanks</th>
+                            <th className="p-2 w-32 text-right">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {allInfrastructure.map(infraId => (
-                            <tr key={infraId} className="border-b">
-                                <td className="p-2 font-medium">{infraId}</td>
-                                <td className="p-2">
-                                    <TankSelector
-                                        selectedTanks={currentTerminalSettings.infrastructureTankMapping?.[infraId] || []}
-                                        onChange={(tanks) => handleMappingChange(infraId, tanks)}
-                                    />
-                                </td>
-                            </tr>
-                        ))}
+                        {allInfrastructure.map(infraId => {
+                            const wharf = docklineToWharfMap[infraId];
+                            const displayName = wharf ? `${wharf} - ${formatInfraName(infraId)}` : formatInfraName(infraId);
+                            return (
+                                <tr key={infraId} className="border-b">
+                                    <td className="p-2 font-medium">{displayName}</td>
+                                    {editingInfra === infraId ? (
+                                        <>
+                                            <td className="p-2">
+                                                <TankSelector selectedTanks={selectedTanks} onChange={setSelectedTanks} />
+                                            </td>
+                                            <td className="p-2 text-right space-x-1">
+                                                <button onClick={handleSave} className="btn-icon" title="Save"><i className="fas fa-save text-xs"></i></button>
+                                                <button onClick={handleCancel} className="btn-icon" title="Cancel"><i className="fas fa-times text-xs"></i></button>
+                                            </td>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <td className="p-2 text-gray-600">{(infraMapping[infraId] || []).join(', ')}</td>
+                                            <td className="p-2 text-right">
+                                                <button onClick={() => handleEdit(infraId)} className="btn-icon" title="Edit"><i className="fas fa-pen text-xs"></i></button>
+                                            </td>
+                                        </>
+                                    )}
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
@@ -284,28 +318,19 @@ const InfrastructureMappings: React.FC = () => {
     );
 };
 
-const InfrastructureModalityMappings: React.FC = () => {
+const InfraModalityMappings: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return null;
 
     const { settings, setSettings, selectedTerminal, currentTerminalSettings } = context;
 
-    const allInfrastructure = useMemo(() => {
-        const infra = new Set([
-            ...Object.keys(currentTerminalSettings.docklines || {}),
-            ...Object.keys(currentTerminalSettings.assetHolds || {}),
-            ...Object.keys(currentTerminalSettings.infrastructureTankMapping || {}),
-            ...Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
-        ]);
-        return Array.from(infra).sort();
-    }, [currentTerminalSettings]);
+    const modalityMapping = currentTerminalSettings.infrastructureModalityMapping || {};
+    const docklineToWharfMap = createDocklineToWharfMap(currentTerminalSettings);
+    const allInfrastructure = Object.keys(modalityMapping).sort(naturalSort);
 
-    const handleMappingChange = (infraId: string, modality: Modality) => {
+    const handleModalityChange = (infraId: string, modality: Modality) => {
         setSettings(prev => {
             const newSettings = JSON.parse(JSON.stringify(prev));
-            if (!newSettings[selectedTerminal].infrastructureModalityMapping) {
-                newSettings[selectedTerminal].infrastructureModalityMapping = {};
-            }
             newSettings[selectedTerminal].infrastructureModalityMapping[infraId] = modality;
             return newSettings;
         });
@@ -313,33 +338,37 @@ const InfrastructureModalityMappings: React.FC = () => {
 
     return (
         <div className="card p-6">
-            <p className="text-sm text-text-secondary mb-4">Assign a modality to each piece of infrastructure to enable filtering on the planning board.</p>
+            <p className="text-sm text-text-secondary mb-4">Assign a modality (Vessel, Truck, or Rail) to each piece of infrastructure.</p>
             <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                     <thead className="text-left bg-slate-50">
                         <tr>
-                            <th className="p-2 w-1/4">Infrastructure</th>
-                            <th className="p-2">Assigned Modality</th>
+                            <th className="p-2">Infrastructure</th>
+                            <th className="p-2">Modality</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {allInfrastructure.map(infraId => (
-                            <tr key={infraId} className="border-b">
-                                <td className="p-2 font-medium">{infraId}</td>
-                                <td className="p-2">
-                                    <select
-                                        value={currentTerminalSettings.infrastructureModalityMapping?.[infraId] || ''}
-                                        onChange={(e) => handleMappingChange(infraId, e.target.value as Modality)}
-                                        className="!py-1 !px-2 w-48"
-                                    >
-                                        <option value="">Select Modality...</option>
-                                        <option value="vessel">Vessel</option>
-                                        <option value="truck">Truck</option>
-                                        <option value="rail">Rail</option>
-                                    </select>
-                                </td>
-                            </tr>
-                        ))}
+                        {allInfrastructure.map(infraId => {
+                             const wharf = docklineToWharfMap[infraId];
+                             const displayName = wharf ? `${wharf} - ${formatInfraName(infraId)}` : formatInfraName(infraId);
+                             return (
+                                <tr key={infraId} className="border-b">
+                                    <td className="p-2 font-medium">{displayName}</td>
+                                    <td className="p-2">
+                                        <select 
+                                            value={modalityMapping[infraId] || ''} 
+                                            onChange={e => handleModalityChange(infraId, e.target.value as Modality)}
+                                            className="!py-1 !px-2 w-40"
+                                        >
+                                            <option value="">Select...</option>
+                                            <option value="vessel">Vessel</option>
+                                            <option value="truck">Truck</option>
+                                            <option value="rail">Rail</option>
+                                        </select>
+                                    </td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
@@ -351,162 +380,144 @@ const ContractRatesConfig: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return null;
 
-    const { settings, setSettings } = context;
-    const { contracts, masterProducts, specialServices } = settings;
-    const { masterCustomers } = settings[context.selectedTerminal] as any;
+    const { settings, setSettings, currentTerminalSettings } = context;
     
-    const [newRate, setNewRate] = useState({ customer: '', product: '', ratePerTonne: '' });
-
+    const [localContracts, setLocalContracts] = useState(settings.contracts);
+    
     const allServices = useMemo(() => {
-        const serviceSet = new Set<string>();
-        (Object.values(specialServices) as string[][]).forEach(sList => sList.forEach(s => serviceSet.add(s)));
-        return Array.from(serviceSet).sort();
-    }, [specialServices]);
-    
+        const services = new Set<string>();
+        (settings.vesselServices || []).forEach(s => services.add(s));
+        (settings.productServices || []).forEach(s => services.add(s));
+        // FIX: Add array check to prevent crash if modalityServices is not as expected.
+        Object.values(settings.modalityServices || {}).forEach(modalityServices => {
+            if (Array.isArray(modalityServices)) {
+                modalityServices.forEach(s => services.add(s));
+            }
+        });
+        return Array.from(services).sort();
+    }, [settings.vesselServices, settings.productServices, settings.modalityServices]);
+
     const handleServiceRateChange = (serviceName: string, rate: string) => {
-        const newRate = parseFloat(rate);
-        if (isNaN(newRate)) return;
-        setSettings(prev => {
-            const newSettings = JSON.parse(JSON.stringify(prev));
-            newSettings.contracts.serviceRates[serviceName] = newRate;
-            return newSettings;
-        });
+        const numRate = parseFloat(rate);
+        setLocalContracts(prev => ({
+            ...prev,
+            serviceRates: {
+                ...prev.serviceRates,
+                [serviceName]: isNaN(numRate) ? 0 : numRate
+            }
+        }));
     };
-
+    
     const handleCustomerRateChange = (customer: string, product: string, rate: string) => {
-        const newRate = parseFloat(rate);
-        if (isNaN(newRate)) return;
-        setSettings(prev => {
-            const newSettings = JSON.parse(JSON.stringify(prev));
-            newSettings.contracts.customerRates[customer][product].ratePerTonne = newRate;
-            return newSettings;
+        const numRate = parseFloat(rate);
+        setLocalContracts(prev => {
+            const newCustomerRates = JSON.parse(JSON.stringify(prev.customerRates));
+            if (!newCustomerRates[customer]) {
+                newCustomerRates[customer] = {};
+            }
+            newCustomerRates[customer][product] = { ratePerTonne: isNaN(numRate) ? 0 : numRate };
+            return { ...prev, customerRates: newCustomerRates };
         });
     };
     
-    const handleAddNewRate = () => {
-        if (!newRate.customer || !newRate.product || !newRate.ratePerTonne) {
-            alert('Please select a customer, product, and enter a rate.');
-            return;
-        }
-        const rate = parseFloat(newRate.ratePerTonne);
-        if(isNaN(rate)) {
-            alert('Please enter a valid number for the rate.');
-            return;
-        }
-
-        setSettings(prev => {
-            const newSettings = JSON.parse(JSON.stringify(prev));
-            if (!newSettings.contracts.customerRates[newRate.customer]) {
-                newSettings.contracts.customerRates[newRate.customer] = {};
-            }
-            newSettings.contracts.customerRates[newRate.customer][newRate.product] = { ratePerTonne: rate };
-            return newSettings;
-        });
-        setNewRate({ customer: '', product: '', ratePerTonne: '' });
+    const handleSaveChanges = () => {
+        setSettings(prev => ({
+            ...prev,
+            contracts: localContracts
+        }));
+        alert('Contract rates saved!');
     };
-
-    const handleDeleteRate = (customer: string, product: string) => {
-         setSettings(prev => {
-            const newSettings = JSON.parse(JSON.stringify(prev));
-            delete newSettings.contracts.customerRates[customer][product];
-            if (Object.keys(newSettings.contracts.customerRates[customer]).length === 0) {
-                delete newSettings.contracts.customerRates[customer];
-            }
-            return newSettings;
-        });
-    };
-
-
+    
     return (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-1 card p-6">
-                <h3 className="text-lg font-semibold mb-4">Service Rates</h3>
-                <div className="space-y-2 max-h-96 overflow-y-auto">
+        <div className="space-y-6">
+            <div className="flex justify-end">
+                <button onClick={handleSaveChanges} className="btn-primary">Save All Contract Rates</button>
+            </div>
+
+            <div className="card p-6">
+                <h3 className="text-xl font-semibold text-text-primary mb-4">Service Rates</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
                     {allServices.map(service => (
-                        <div key={service} className="flex items-center justify-between gap-2">
-                            <label className="text-sm flex-1">{service}</label>
+                        <div key={service}>
+                            <label htmlFor={`service-${service}`}>{service}</label>
                             <div className="flex items-center">
-                               <span className="mr-1 text-sm">$</span>
-                                <input 
-                                    type="number" 
-                                    value={contracts.serviceRates[service] || '0'} 
+                                <span className="p-2 bg-slate-200 border border-r-0 border-slate-300 rounded-l-md">$</span>
+                                <input
+                                    id={`service-${service}`}
+                                    type="number"
+                                    value={localContracts.serviceRates[service] || ''}
                                     onChange={e => handleServiceRateChange(service, e.target.value)}
-                                    className="w-24 text-right !py-1"
+                                    className="!rounded-l-none"
+                                    placeholder="0.00"
                                 />
                             </div>
                         </div>
                     ))}
                 </div>
             </div>
-            <div className="lg:col-span-2 card p-6">
-                <h3 className="text-lg font-semibold mb-4">Customer Throughput Rates ($ per Tonne)</h3>
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead className="text-left bg-slate-50">
-                            <tr>
-                                <th className="p-2">Customer</th><th className="p-2">Product</th><th className="p-2">Rate/Tonne</th><th className="p-2">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {Object.entries(contracts.customerRates).flatMap(([customer, productRates]) => 
-                                Object.entries(productRates).map(([product, rates]) => (
-                                    <tr key={`${customer}-${product}`} className="border-b">
-                                        <td className="p-2 font-medium">{customer}</td>
-                                        <td className="p-2">{product}</td>
-                                        <td className="p-2">
-                                            <input 
-                                                type="number" 
-                                                value={rates.ratePerTonne} 
+
+            <div className="card p-6">
+                <h3 className="text-xl font-semibold text-text-primary mb-4">Customer Product Rates (per Tonne)</h3>
+                <div className="space-y-6">
+                    {(currentTerminalSettings.masterCustomers || []).map(customer => (
+                        <div key={customer} className="p-4 border rounded-lg bg-slate-50">
+                            <h4 className="font-bold text-lg mb-3">{customer}</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
+                                {(settings.masterProducts || []).map(product => {
+                                    const hasRate = settings.contracts?.customerRates?.[customer]?.[product] !== undefined;
+                                    const rate = localContracts.customerRates?.[customer]?.[product]?.ratePerTonne || '';
+                                    
+                                    const customerUsesProduct = currentTerminalSettings.customerMatrix.some(m => m.customer === customer && m.product === product);
+                                    if (!customerUsesProduct && !hasRate) return null;
+
+                                    return (
+                                    <div key={product}>
+                                        <label htmlFor={`rate-${customer}-${product}`}>{product}</label>
+                                        <div className="flex items-center">
+                                            <span className="p-2 bg-slate-200 border border-r-0 border-slate-300 rounded-l-md">$</span>
+                                            <input
+                                                id={`rate-${customer}-${product}`}
+                                                type="number"
+                                                value={rate}
                                                 onChange={e => handleCustomerRateChange(customer, product, e.target.value)}
-                                                className="w-24 !py-1 text-right"
+                                                className="!rounded-l-none"
+                                                placeholder="0.00"
                                             />
-                                        </td>
-                                        <td className="p-2">
-                                            <button onClick={() => handleDeleteRate(customer, product)} className="btn-icon danger" title="Delete Rate"><i className="fas fa-trash text-xs"></i></button>
-                                        </td>
-                                    </tr>
-                                ))
-                            )}
-                            <tr className="bg-slate-50">
-                                <td className="p-2">
-                                    <select value={newRate.customer} onChange={e => setNewRate(s => ({...s, customer: e.target.value, product: ''}))} className="w-full !py-1">
-                                        <option value="">Select Customer...</option>
-                                        {masterCustomers.map((c: string) => <option key={c} value={c}>{c}</option>)}
-                                    </select>
-                                </td>
-                                <td className="p-2">
-                                     <select value={newRate.product} onChange={e => setNewRate(s => ({...s, product: e.target.value}))} className="w-full !py-1" disabled={!newRate.customer}>
-                                        <option value="">Select Product...</option>
-                                        {masterProducts.map(p => <option key={p} value={p}>{p}</option>)}
-                                    </select>
-                                </td>
-                                <td className="p-2">
-                                    <input type="number" value={newRate.ratePerTonne} onChange={e => setNewRate(s => ({...s, ratePerTonne: e.target.value}))} className="w-24 !py-1" placeholder="0.00"/>
-                                </td>
-                                <td className="p-2">
-                                    <button onClick={handleAddNewRate} className="btn-primary !py-1 !px-2">Add</button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                            </div>
+                        </div>
+                    ))}
                 </div>
             </div>
         </div>
     );
 };
 
-
 const ConfigMatrix: React.FC = () => {
     const [view, setView] = useState<ConfigView>('compatibility');
 
     const renderView = () => {
         switch (view) {
-            case 'compatibility': return <ProductCompatibility />;
-            case 'mappings': return <CustomerMappings />;
-            case 'infra-mappings': return <InfrastructureMappings />;
-            case 'infra-modality-mappings': return <InfrastructureModalityMappings />;
-            case 'contracts': return <ContractRatesConfig />;
-            default: return null;
+            case 'compatibility':
+                return <ProductCompatibility />;
+            case 'mappings':
+                return <CustomerMappings />;
+            case 'infra-mappings':
+                return <InfraTankMappings />;
+            case 'infra-modality-mappings':
+                return <InfraModalityMappings />;
+            case 'contracts':
+                return <ContractRatesConfig />;
+            default:
+                return (
+                    <div className="card p-6 text-center">
+                        <h3 className="text-lg font-semibold">View Not Implemented</h3>
+                        <p className="text-text-secondary">This configuration section is not yet available.</p>
+                    </div>
+                );
         }
     };
 
@@ -514,16 +525,15 @@ const ConfigMatrix: React.FC = () => {
         <div>
             <div className="sticky top-0 z-10 bg-background-body p-3 sm:p-6">
                 <div className="border-b border-border-primary">
-                    <nav className="-mb-px flex space-x-6 overflow-x-auto" aria-label="Tabs">
-                        <button onClick={() => setView('compatibility')} className={`tab ${view === 'compatibility' ? 'active' : ''}`}>Product Group Compatibility</button>
-                        <button onClick={() => setView('mappings')} className={`tab ${view === 'mappings' ? 'active' : ''}`}>Customer & Asset Mappings</button>
-                        <button onClick={() => setView('infra-mappings')} className={`tab ${view === 'infra-mappings' ? 'active' : ''}`}>Infrastructure & Tank Mappings</button>
-                        <button onClick={() => setView('infra-modality-mappings')} className={`tab ${view === 'infra-modality-mappings' ? 'active' : ''}`}>Infrastructure & Modality Mappings</button>
-                        <button onClick={() => setView('contracts')} className={`tab ${view === 'contracts' ? 'active' : ''}`}>Contracts & Rates</button>
+                    <nav className="-mb-px flex space-x-6" aria-label="Tabs">
+                        <button onClick={() => setView('compatibility')} className={`tab ${view === 'compatibility' ? 'active' : ''}`}>Product Compatibility</button>
+                        <button onClick={() => setView('mappings')} className={`tab ${view === 'mappings' ? 'active' : ''}`}>Customer Mappings</button>
+                        <button onClick={() => setView('infra-mappings')} className={`tab ${view === 'infra-mappings' ? 'active' : ''}`}>Infra-Tank Mappings</button>
+                        <button onClick={() => setView('infra-modality-mappings')} className={`tab ${view === 'infra-modality-mappings' ? 'active' : ''}`}>Infra-Modality Mappings</button>
+                        <button onClick={() => setView('contracts')} className={`tab ${view === 'contracts' ? 'active' : ''}`}>Contracts</button>
                     </nav>
                 </div>
             </div>
-
             <div className="p-3 sm:p-6">
                 {renderView()}
             </div>
@@ -531,5 +541,4 @@ const ConfigMatrix: React.FC = () => {
     );
 };
 
-// FIX: Add default export for the component.
 export default ConfigMatrix;

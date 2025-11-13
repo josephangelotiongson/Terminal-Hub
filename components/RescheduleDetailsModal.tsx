@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useContext } from 'react';
+
+
+import React, { useState, useEffect, useContext, useMemo } from 'react';
 import Modal from './Modal';
 import { Operation, Hold } from '../types';
 import { AppContext } from '../context/AppContext';
 import DateTimePicker from './DateTimePicker'; // Import the new component
-import { formatInfraName } from '../utils/helpers';
+import { formatInfraName, canEditPlan, getOperationDurationHours, validateOperationPlan } from '../utils/helpers';
+import { MOCK_CURRENT_TIME } from '../constants';
 
 interface RescheduleDetailsModalProps {
     isOpen: boolean;
@@ -21,71 +24,136 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
     const context = useContext(AppContext);
     if (!context) return null;
 
-    const { operations, holds, currentTerminalSettings, setOperations, addActivityLog, rescheduleModalData } = context;
+    const { operations, holds, currentTerminalSettings, setOperations, addActivityLog, rescheduleModalData, currentUser, simulatedTime, startPlacementMode, settings } = context;
 
-    const [details, setDetails] = useState<any>({});
+    const [customDetails, setCustomDetails] = useState<any>({});
     const [newTime, setNewTime] = useState('');
     const [newResource, setNewResource] = useState('');
     const [suggestions, setSuggestions] = useState<SuggestedSlot[]>([]);
+    const canSave = canEditPlan(currentUser);
 
-    const validTruckInfra = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
-        .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === 'truck');
+    const validTruckInfra = useMemo(() => Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
+        .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === 'truck'), [currentTerminalSettings]);
+
+    const { reason, details } = useMemo(() => {
+        if (!isOpen) return { reason: '', details: {} };
+    
+        // Priority 1: From dashboard delay button
+        if (rescheduleModalData.source === 'dashboard-delay') {
+            return { reason: 'From Delay', details: { ...operation.delay } };
+        }
+    
+        // Priority 2: From explicit requeue (e.g., rejection, overdue)
+        if (operation.requeueDetails) {
+            return { reason: operation.requeueDetails.reason, details: operation.requeueDetails.details || {} };
+        }
+    
+        // Priority 3: Implicit requeue from validation issues (e.g., hold conflict)
+        const activeHolds = holds.filter(h => h.status === 'approved' && h.workOrderStatus !== 'Closed');
+        const validation = validateOperationPlan(operation, currentTerminalSettings, settings, activeHolds);
+        const conflictIssue = validation.issues.find(issue => issue.toLowerCase().includes('conflict') && issue.toLowerCase().includes('hold'));
+    
+        if (conflictIssue) {
+            // Find the conflicting hold to get structured data
+            const opStart = new Date(operation.eta).getTime();
+            const opEnd = opStart + getOperationDurationHours(operation) * 3600 * 1000;
+            const conflictingHold = activeHolds.find(hold => {
+                const holdStart = new Date(hold.startTime).getTime();
+                const holdEnd = new Date(hold.endTime).getTime();
+                if (!(opStart < holdEnd && opEnd > holdStart)) return false; // No time overlap
+                
+                return operation.transferPlan.some(tp => {
+                    if (tp.infrastructureId !== hold.resource) return false;
+                    if (hold.tank) {
+                        return tp.transfers.some(t => t.from === hold.tank || t.to === hold.tank);
+                    }
+                    return true;
+                });
+            });
+    
+            return {
+                reason: 'Hold Conflict',
+                details: {
+                    holdReason: conflictingHold?.reason || 'Unknown',
+                    resource: conflictingHold?.resource || 'Unknown',
+                }
+            };
+        }
+    
+        // Fallback for other validation issues
+        if (validation.issues.length > 0) {
+            return { reason: 'Plan Invalid', details: { issue: validation.issues[0] } };
+        }
+    
+        // Fallback for status-based reasons if requeueDetails is missing
+        if (operation.currentStatus === 'No Show') return { reason: 'No Show', details: {} };
+        if (operation.currentStatus === 'Reschedule Required') return { reason: 'Overdue', details: {} };
+    
+        return { reason: 'Unknown Reason', details: {} };
+    
+    }, [isOpen, operation, holds, currentTerminalSettings, settings, rescheduleModalData.source]);
 
     useEffect(() => {
         if (isOpen) {
-            setDetails(operation.requeueDetails?.details || {});
+            setCustomDetails(details);
             setNewTime('');
             setNewResource('');
+        }
+    }, [isOpen, details]);
 
-            // --- Recommendation Engine ---
-            const scheduledItems: { resource: string, start: number, end: number }[] = [];
-            const truckDurationMs = 1 * 60 * 60 * 1000; // 1 hour
+    useEffect(() => {
+        if (isOpen) {
+            const opDurationHours = getOperationDurationHours(operation);
+            const opDurationMs = opDurationHours * 3600 * 1000;
 
-            operations.forEach(op => {
-                if (op.status === 'planned' && op.currentStatus !== 'Reschedule Required') {
-                    const start = new Date(op.eta).getTime();
-                    const duration = (op.modality === 'truck' ? 1 : op.modality === 'rail' ? 2 : 4) * 3600 * 1000;
-                    op.transferPlan.forEach(tp => {
-                        scheduledItems.push({ resource: tp.infrastructureId, start, end: start + duration });
-                    });
+            const scheduledItems = [...operations, ...holds].flatMap(item => {
+                if ('resource' in item) { // It's a Hold
+                    if (item.status === 'approved' || item.status === 'pending') {
+                        return [{ resource: item.resource, start: new Date(item.startTime).getTime(), end: new Date(item.endTime).getTime() }];
+                    }
+                } else { // It's an Operation
+                    if (item.id !== operation.id && ((item.status === 'planned' && item.currentStatus !== 'Reschedule Required') || item.status === 'active')) {
+                        const start = new Date(item.eta).getTime();
+                        const duration = getOperationDurationHours(item) * 3600 * 1000;
+                        return item.transferPlan.map(tp => ({ resource: tp.infrastructureId, start, end: start + duration }));
+                    }
                 }
-            });
+                return [];
+            }).filter(Boolean);
 
-            holds.forEach(hold => {
-                scheduledItems.push({ resource: hold.resource, start: new Date(hold.startTime).getTime(), end: new Date(hold.endTime).getTime() });
-            });
+            const transfer = operation.transferPlan[0]?.transfers[0];
+            let compatibleInfra = validTruckInfra;
+            if (transfer) {
+                const requiredTank = transfer.direction === 'Tank to Truck' ? transfer.from : transfer.to;
+                if (requiredTank && currentTerminalSettings.masterTanks?.[requiredTank]) {
+                    compatibleInfra = validTruckInfra.filter(bay => 
+                        (currentTerminalSettings.infrastructureTankMapping?.[bay] || []).includes(requiredTank)
+                    );
+                }
+            }
             
             const foundSlots: SuggestedSlot[] = [];
-            const searchStart = new Date();
-            if (viewDate.toDateString() !== searchStart.toDateString()) {
-                searchStart.setHours(0,0,0,0);
-            }
-             searchStart.setMinutes(Math.ceil(searchStart.getMinutes()/15)*15, 0, 0);
+            let searchStartMs = Math.max(simulatedTime.getTime(), new Date(viewDate).setHours(0,0,0,0));
+            const remainder = searchStartMs % (15 * 60 * 1000);
+            if (remainder !== 0) searchStartMs += (15 * 60 * 1000) - remainder;
 
-            const searchEnd = new Date(viewDate);
-            searchEnd.setHours(23, 59, 59, 999);
+            const searchEndMs = searchStartMs + 3 * 24 * 60 * 60 * 1000;
 
-            for (let time = searchStart.getTime(); time < searchEnd.getTime() && foundSlots.length < 3; time += 15 * 60 * 1000) {
-                for (const infra of validTruckInfra) {
-                    const slotStart = time;
-                    const slotEnd = slotStart + truckDurationMs;
-                    
+            for (let time = searchStartMs; time < searchEndMs && foundSlots.length < 3; time += 15 * 60 * 1000) {
+                const slotEnd = time + opDurationMs;
+                for (const infra of compatibleInfra) {
                     const conflict = scheduledItems.some(item => 
-                        item.resource === infra &&
-                        Math.max(item.start, slotStart) < Math.min(item.end, slotEnd)
+                        item.resource === infra && Math.max(item.start, time) < Math.min(item.end, slotEnd)
                     );
-
                     if (!conflict) {
-                        foundSlots.push({ time: new Date(slotStart), resource: infra });
+                        foundSlots.push({ time: new Date(time), resource: infra });
                         if (foundSlots.length >= 3) break;
                     }
                 }
-                if (foundSlots.length >= 3) break;
             }
             setSuggestions(foundSlots);
-
         }
-    }, [isOpen, operation, operations, holds, viewDate, currentTerminalSettings]);
+    }, [isOpen, operation, operations, holds, viewDate, currentTerminalSettings, simulatedTime, validTruckInfra, settings]);
 
     const handleSave = () => {
         if (!newTime || !newResource) {
@@ -95,37 +163,27 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
 
         const finalTime = new Date(newTime);
         
-        if (finalTime.getTime() < new Date().getTime()) {
+        if (finalTime.getTime() < simulatedTime.getTime()) {
             alert('Cannot reschedule to a time in the past. Please select a future time.');
             return;
         }
         
         setOperations(prevOps => prevOps.map(op => {
             if (op.id === operation.id) {
-// FIX: Added type assertion to JSON.parse for type safety.
                 const updatedOp = JSON.parse(JSON.stringify(op)) as Operation;
 
-                if (rescheduleModalData.source === 'dashboard-delay') {
-                    updatedOp.status = 'planned'; // Atomic state change
-                    addActivityLog(operation.id, 'REQUEUE', `Sent to planning from active/delayed state.`);
-                     updatedOp.requeueDetails = {
-                        reason: 'From Delay',
-                        user: context.currentUser.name,
-                        time: new Date().toISOString(),
-                        details: { ...details, originalReason: op.delay?.reason || 'Unknown' }
-                    };
-                }
+                addActivityLog(operation.id, 'UPDATE', `Rescheduled to ${finalTime.toLocaleString()} at ${formatInfraName(newResource)}.`);
 
-                if (updatedOp.requeueDetails) {
-                    updatedOp.requeueDetails.details = details;
-                }
                 updatedOp.eta = finalTime.toISOString();
                 updatedOp.queuePriority = finalTime.getTime();
                 updatedOp.currentStatus = 'Scheduled';
                 updatedOp.truckStatus = 'Planned';
                 updatedOp.transferPlan = updatedOp.transferPlan.map((tp: any) => ({ ...tp, infrastructureId: newResource }));
                 
-                addActivityLog(operation.id, 'UPDATE', `Rescheduled to ${finalTime.toLocaleString()} at ${newResource}.`);
+                // Clear flags that indicate a need for rescheduling
+                updatedOp.delay = { active: false };
+                updatedOp.requeueDetails = undefined;
+                
                 return updatedOp;
             }
             return op;
@@ -135,7 +193,7 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
     };
 
     const handleDetailsChange = (field: string, value: string) => {
-        setDetails((prev: any) => ({ ...prev, [field]: value }));
+        setCustomDetails((prev: any) => ({ ...prev, [field]: value }));
     };
     
     const handleSuggestionClick = (slot: SuggestedSlot) => {
@@ -143,9 +201,12 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
         setNewResource(slot.resource);
     };
 
+    const handleSelectOnBoard = () => {
+        startPlacementMode(operation.id);
+        onClose();
+    };
+
     const renderReasonFields = () => {
-        const reason = rescheduleModalData.source === 'dashboard-delay' ? 'From Delay' : operation.requeueDetails?.reason;
-        
         switch (reason) {
             case 'Underloaded':
             case 'Overloaded':
@@ -153,11 +214,11 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
                     <div className="grid grid-cols-2 gap-4">
                         <div>
                             <label>Actual Loaded (T)</label>
-                            <input type="number" value={details.actual || ''} onChange={e => handleDetailsChange('actual', e.target.value)} />
+                            <input type="number" value={customDetails.actual || ''} onChange={e => handleDetailsChange('actual', e.target.value)} />
                         </div>
                         <div>
                             <label>Expected Loaded (T)</label>
-                            <input type="number" value={details.expected || ''} onChange={e => handleDetailsChange('expected', e.target.value)} />
+                            <input type="number" value={customDetails.expected || ''} onChange={e => handleDetailsChange('expected', e.target.value)} />
                         </div>
                     </div>
                 );
@@ -166,7 +227,7 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
                     <div>
                         <label>New Driver ETA</label>
                         <DateTimePicker 
-                            value={details.eta || ''} 
+                            value={customDetails.eta || ''} 
                             onChange={(isoString) => handleDetailsChange('eta', isoString)} 
                         />
                     </div>
@@ -175,7 +236,13 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
                  return (
                     <p className="text-sm mb-2 text-text-secondary">
                         This truck conflicts with a hold for 
-                        <strong className="text-text-primary"> {details.holdReason}</strong> on <strong className="text-text-primary">{formatInfraName(details.resource)}</strong>.
+                        <strong className="text-text-primary"> "{details.holdReason}"</strong> on <strong className="text-text-primary">{formatInfraName(details.resource)}</strong>.
+                    </p>
+                );
+            case 'Plan Invalid':
+                return (
+                    <p className="text-sm mb-2 text-text-secondary">
+                        Plan is invalid: <strong className="text-text-primary">{details.issue}</strong>
                     </p>
                 );
             case 'From Delay':
@@ -190,8 +257,9 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
         }
     };
 
-    const reason = rescheduleModalData.source === 'dashboard-delay' ? 'From Delay' : operation.requeueDetails?.reason;
-    if (!reason) return null;
+    if (!isOpen) return null;
+    
+    const isSameDay = (d1: Date, d2: Date) => d1.getDate() === d2.getDate() && d1.getMonth() === d2.getMonth() && d1.getFullYear() === d2.getFullYear();
 
     return (
         <Modal
@@ -201,7 +269,7 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
             footer={
                 <>
                     <button onClick={onClose} className="btn-secondary">Cancel</button>
-                    <button onClick={handleSave} className="btn-primary">Save Reschedule</button>
+                    <button onClick={handleSave} className="btn-primary" disabled={!canSave} title={!canSave ? "Permission Denied" : ""}>Save Reschedule</button>
                 </>
             }
         >
@@ -212,7 +280,7 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
                 </div>
 
                 <div className="p-4 bg-slate-50 rounded-lg">
-                    <h5 className="font-semibold mb-2">Rejection Details</h5>
+                    <h5 className="font-semibold mb-2">Details</h5>
                     {renderReasonFields()}
                     {details.notes && (
                         <div className="mt-4">
@@ -231,19 +299,30 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
                 </div>
 
                 <div className="p-4 bg-slate-50 rounded-lg">
-                    <h5 className="font-semibold mb-2">Suggested Slots</h5>
-                    <div className="flex flex-wrap gap-2">
-                        {suggestions.length > 0 ? suggestions.map(slot => (
-                            <button key={`${slot.resource}-${slot.time.toISOString()}`} className="btn-suggestion" onClick={() => handleSuggestionClick(slot)}>
-                                {formatInfraName(slot.resource)} @ {slot.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </button>
-                        )) : <p className="text-sm text-text-secondary italic">No available slots found for the rest of today.</p>}
+                    <h5 className="font-semibold mb-2">Suggested Next Available Slots</h5>
+                    <div className="flex flex-col gap-2">
+                        <div className="flex flex-wrap gap-2">
+                            {suggestions.length > 0 ? suggestions.map((slot, idx) => {
+                                const isToday = isSameDay(slot.time, simulatedTime);
+                                return (
+                                    <button key={`${slot.resource}-${slot.time.toISOString()}-${idx}`} className="btn-suggestion text-left" onClick={() => handleSuggestionClick(slot)}>
+                                        <div className="font-bold text-brand-dark">{formatInfraName(slot.resource)}</div>
+                                        <div className="text-xs">
+                                            {!isToday && <span className="mr-1">{slot.time.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>}
+                                            {slot.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </div>
+                                    </button>
+                                );
+                            }) : <p className="text-sm text-text-secondary italic">No compatible slots found within the next 3 days.</p>}
+                        </div>
+                        <button className="btn-secondary w-full mt-2" onClick={handleSelectOnBoard}>
+                            <i className="fas fa-th mr-2"></i>Select Slot on Board
+                        </button>
                     </div>
                 </div>
 
                 <div>
                     <h5 className="font-semibold mb-2">Or Reschedule Manually</h5>
-                    <p className="text-xs text-text-secondary mb-2 italic">Hint: You can also drag and drop the truck onto the planning grid.</p>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label>New Scheduled Time</label>

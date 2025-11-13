@@ -3,7 +3,7 @@ import { AppContext } from '../context/AppContext';
 import { AppSettings, Modality, TerminalSettings, CalibrationPoint } from '../types';
 import InputModal from './InputModal'; // Import the new component
 import ConfirmModal from './ConfirmModal';
-import { formatInfraName } from '../utils/helpers';
+import { formatInfraName, naturalSort, createDocklineToWharfMap } from '../utils/helpers';
 import CalibrationModal from './CalibrationModal';
 
 // Reusable component for list-based master data management
@@ -50,54 +50,85 @@ const ListDataManager: React.FC<{
     );
 };
 
-const SpecialServicesManager: React.FC = () => {
+const ServicesManager: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return null;
 
     const { settings, setSettings } = context;
 
-    const handleAddService = (modality: Modality, service: string) => {
+    const handleAddService = (category: 'vesselServices' | 'productServices' | `modalityServices.${Modality}`, service: string) => {
         setSettings(prev => {
             const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
-            if (!newSettings.specialServices[modality]) {
-                newSettings.specialServices[modality] = [];
+            if (category.startsWith('modalityServices')) {
+                const modality = category.split('.')[1] as Modality;
+                if (!newSettings.modalityServices[modality]) {
+                    newSettings.modalityServices[modality] = [];
+                }
+                newSettings.modalityServices[modality].push(service);
+                newSettings.modalityServices[modality].sort();
+            } else {
+                if (!newSettings[category]) {
+                    newSettings[category] = [];
+                }
+                (newSettings[category] as string[]).push(service);
+                (newSettings[category] as string[]).sort();
             }
-            newSettings.specialServices[modality].push(service);
             return newSettings;
         });
     };
 
-    const handleDeleteService = (modality: Modality, service: string) => {
-        setSettings(prev => {
+    const handleDeleteService = (category: 'vesselServices' | 'productServices' | `modalityServices.${Modality}`, service: string) => {
+         setSettings(prev => {
             const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
-            newSettings.specialServices[modality] = newSettings.specialServices[modality].filter((s: string) => s !== service);
+            if (category.startsWith('modalityServices')) {
+                const modality = category.split('.')[1] as Modality;
+                newSettings.modalityServices[modality] = newSettings.modalityServices[modality].filter((s: string) => s !== service);
+            } else {
+                (newSettings[category] as string[]) = (newSettings[category] as string[]).filter((s: string) => s !== service);
+            }
             return newSettings;
         });
     };
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <ListDataManager
                 title="Vessel Services"
-                items={settings.specialServices.vessel || []}
-                onAdd={(service) => handleAddService('vessel', service)}
-                onDelete={(service) => handleDeleteService('vessel', service)}
-                noun="Service"
+                items={settings.vesselServices || []}
+                onAdd={(service) => handleAddService('vesselServices', service)}
+                onDelete={(service) => handleDeleteService('vesselServices', service)}
+                noun="Vessel Service"
             />
             <ListDataManager
-                title="Truck Services"
-                items={settings.specialServices.truck || []}
-                onAdd={(service) => handleAddService('truck', service)}
-                onDelete={(service) => handleDeleteService('truck', service)}
-                noun="Service"
+                title="Product Services"
+                items={settings.productServices || []}
+                onAdd={(service) => handleAddService('productServices', service)}
+                onDelete={(service) => handleDeleteService('productServices', service)}
+                noun="Product Service"
             />
-            <ListDataManager
-                title="Rail Services"
-                items={settings.specialServices.rail || []}
-                onAdd={(service) => handleAddService('rail', service)}
-                onDelete={(service) => handleDeleteService('rail', service)}
-                noun="Service"
-            />
+             <div className="card h-full flex flex-col p-6 space-y-4">
+                 <ListDataManager
+                    title="Truck Services"
+                    items={settings.modalityServices?.truck || []}
+                    onAdd={(service) => handleAddService('modalityServices.truck', service)}
+                    onDelete={(service) => handleDeleteService('modalityServices.truck', service)}
+                    noun="Truck Service"
+                />
+                 <ListDataManager
+                    title="Rail Services"
+                    items={settings.modalityServices?.rail || []}
+                    onAdd={(service) => handleAddService('modalityServices.rail', service)}
+                    onDelete={(service) => handleDeleteService('modalityServices.rail', service)}
+                    noun="Rail Service"
+                />
+                 <ListDataManager
+                    title="Vessel Transfer Services"
+                    items={settings.modalityServices?.vessel || []}
+                    onAdd={(service) => handleAddService('modalityServices.vessel', service)}
+                    onDelete={(service) => handleDeleteService('modalityServices.vessel', service)}
+                    noun="Transfer Service"
+                />
+            </div>
         </div>
     );
 };
@@ -129,16 +160,22 @@ const MasterData: React.FC = () => {
     // Modal states
     const [holdReasonModal, setHoldReasonModal] = useState<{ isOpen: boolean; tankName: string | null }>({ isOpen: false, tankName: null });
     const [deletingInfraId, setDeletingInfraId] = useState<string | null>(null);
+    const [newGroupForProduct, setNewGroupForProduct] = useState<string | null>(null);
+    const [deletingTankName, setDeletingTankName] = useState<string | null>(null);
 
 
-    const allInfrastructure = useMemo(() => {
+    const { allInfrastructure, docklineToWharfMap } = useMemo(() => {
         const infra = new Set([
             ...Object.keys(currentTerminalSettings.docklines || {}),
             ...Object.keys(currentTerminalSettings.assetHolds || {}),
             ...Object.keys(currentTerminalSettings.infrastructureTankMapping || {}),
             ...Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
         ]);
-        return Array.from(infra).sort();
+        const dtlwMap = createDocklineToWharfMap(currentTerminalSettings);
+        return { 
+            allInfrastructure: Array.from(infra).sort(naturalSort),
+            docklineToWharfMap: dtlwMap,
+        };
     }, [currentTerminalSettings]);
 
 
@@ -224,6 +261,52 @@ const MasterData: React.FC = () => {
             }
             return newSettings;
         });
+    };
+
+    const handleDeleteTank = (tankName: string) => {
+        const isInUse = operations.some(op => 
+            (op.status === 'planned' || op.status === 'active') &&
+            op.transferPlan.some(line => 
+                line.transfers.some(t => t.from === tankName || t.to === tankName)
+            )
+        );
+        if (isInUse) {
+            alert(`Cannot delete tank "${tankName}" because it is currently in use in a planned or active operation.`);
+            return;
+        }
+        setDeletingTankName(tankName);
+    };
+    
+    const confirmTankDeletion = () => {
+        if (!deletingTankName) return;
+    
+        setSettings(prev => {
+            const newSettings = JSON.parse(JSON.stringify(prev));
+            const terminalData = newSettings[selectedTerminal];
+    
+            // 1. Remove from masterTanks
+            delete terminalData.masterTanks[deletingTankName];
+            
+            // 2. Remove from tankHolds
+            if (terminalData.tankHolds) {
+                delete terminalData.tankHolds[deletingTankName];
+            }
+    
+            // 3. Remove from customerMatrix
+            terminalData.customerMatrix = terminalData.customerMatrix.map((mapping: any) => ({
+                ...mapping,
+                tanks: mapping.tanks.filter((t: string) => t !== deletingTankName)
+            }));
+    
+            // 4. Remove from infrastructureTankMapping
+            Object.keys(terminalData.infrastructureTankMapping).forEach(infraId => {
+                terminalData.infrastructureTankMapping[infraId] = terminalData.infrastructureTankMapping[infraId].filter((t: string) => t !== deletingTankName);
+            });
+    
+            return newSettings;
+        });
+    
+        setDeletingTankName(null);
     };
 
     // --- Infrastructure ---
@@ -319,10 +402,17 @@ const MasterData: React.FC = () => {
                                     <span className="font-medium">{product}</span>
                                     <div className="flex items-center gap-2">
                                         <select value={settings.productGroups[product] || ''} 
-                                            onChange={(e) => handleProductGroupChange(product, e.target.value)}
-                                            className="text-sm !py-1 !px-2 w-32">
+                                            onChange={(e) => {
+                                                if (e.target.value === 'ADD_NEW_GROUP') {
+                                                    setNewGroupForProduct(product);
+                                                } else {
+                                                    handleProductGroupChange(product, e.target.value);
+                                                }
+                                            }}
+                                            className="text-sm !py-1 !px-2 w-40">
                                             <option value="">Select Group</option>
-                                            {[...new Set(Object.values(settings.productGroups))].map((g: string) => <option key={g} value={g}>{g}</option>)}
+                                            {[...new Set(Object.values(settings.productGroups))].sort().map((g: string) => <option key={g} value={g}>{g}</option>)}
+                                            <option value="ADD_NEW_GROUP" className="italic text-blue-600 font-semibold">Add New Group...</option>
                                         </select>
                                         <button onClick={() => handleDeleteProduct(product)} className="btn-icon danger" title="Delete Product"><i className="fas fa-trash text-xs"></i></button>
                                     </div>
@@ -418,6 +508,7 @@ const MasterData: React.FC = () => {
                                                 <button onClick={() => toggleTankHold(tankName)} className={`!py-2 !px-4 text-sm ${hold?.active ? 'btn-danger' : 'btn-secondary'}`}>
                                                     {hold?.active ? 'Remove Hold' : 'Place Hold'}
                                                 </button>
+                                                <button onClick={() => handleDeleteTank(tankName)} className="btn-icon danger" title="Delete Tank"><i className="fas fa-trash text-xs"></i></button>
                                             </div>
                                         </div>
                                     )
@@ -467,10 +558,12 @@ const MasterData: React.FC = () => {
                                             const isDockline = !!currentTerminalSettings.docklines?.[infraId];
                                             const lastProduct = currentTerminalSettings.docklines?.[infraId]?.lastProduct;
                                             const isEditing = editingInfra?.id === infraId;
+                                            const wharf = docklineToWharfMap[infraId];
+                                            const displayName = wharf ? `${wharf} - ${formatInfraName(infraId)}` : formatInfraName(infraId);
 
                                             return (
                                                 <tr key={infraId} className="border-b hover:bg-slate-50">
-                                                    <td className="p-2 font-medium">{formatInfraName(infraId)}</td>
+                                                    <td className="p-2 font-medium">{displayName}</td>
                                                     <td className="p-2">{modality || <span className="text-xs italic text-red-600">Not Set</span>}</td>
                                                     <td className="p-2">
                                                         {isDockline ? (
@@ -507,7 +600,7 @@ const MasterData: React.FC = () => {
                     </>
                 );
             case 'services':
-                return <SpecialServicesManager />;
+                return <ServicesManager />;
             default:
                 return null;
         }
@@ -515,6 +608,25 @@ const MasterData: React.FC = () => {
 
     return (
         <div>
+            <InputModal
+                isOpen={!!newGroupForProduct}
+                onClose={() => setNewGroupForProduct(null)}
+                onSave={(newGroup) => {
+                    if (newGroup && newGroupForProduct) {
+                        handleProductGroupChange(newGroupForProduct, newGroup);
+                    }
+                    setNewGroupForProduct(null);
+                }}
+                title="Add New Product Group"
+                label="New Group Name"
+            />
+            <ConfirmModal 
+                isOpen={!!deletingTankName}
+                onClose={() => setDeletingTankName(null)}
+                onConfirm={confirmTankDeletion}
+                title={`Delete Tank ${deletingTankName}`}
+                message={`Are you sure you want to permanently delete tank "${deletingTankName}"? This will remove it from all mappings and cannot be undone.`}
+            />
             <InputModal 
                 isOpen={holdReasonModal.isOpen}
                 onClose={() => setHoldReasonModal({ isOpen: false, tankName: null })}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { MOCK_CURRENT_TIME } from '../constants';
 
 interface DateTimePickerProps {
     value: string; // ISO string
@@ -39,13 +40,13 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({ value, onChange }) => {
 
             } catch (e) {
                 // Handle invalid date string gracefully
-                const now = new Date();
+                const now = MOCK_CURRENT_TIME;
                 const localISO = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString();
                 setDatePart(localISO.split('T')[0]);
                 setTimePart('12:00');
             }
         } else {
-             const now = new Date();
+             const now = MOCK_CURRENT_TIME;
              const localISO = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString();
              setDatePart(localISO.split('T')[0]);
              setTimePart('12:00');

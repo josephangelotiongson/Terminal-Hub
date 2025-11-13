@@ -1,4 +1,7 @@
+
 import { Modality } from './types';
+
+export const MOCK_CURRENT_TIME = new Date('2024-07-25T10:00:00.000Z');
 
 export const VESSEL_COMMON_EVENTS: string[] = [
     'START PREPARATIONS / CREW ONSITE',
@@ -27,9 +30,15 @@ export const VESSEL_COMMODITY_EVENTS: string[] = [
     'PIG RECEIVED / COMMODITY COMPLETED',
 ];
 
+export const LINE_CLEANING_EVENTS: string[] = [
+    'START PIG/FLUSH',
+    'LINE CHECKED',
+    'LINE CLEAR FOR NEXT PRODUCT'
+];
+
 export const SOF_EVENTS_MODALITY: { [key in Modality]: string[] } = {
     vessel: VESSEL_COMMON_EVENTS,
-    truck: ['Arrived', 'Directed to Bay', 'On Bay', 'Pumping Started', 'Pumping Stopped', 'Paperwork Done', 'Departed'],
+    truck: ['Arrived', 'Ready / Approved', 'Directed to Bay', 'On Bay', 'Pumping Started', 'Pumping Stopped', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Departed'],
     rail: ['Arrived at Terminal', 'On Siding', 'Hose Connect', 'Checks OK', 'Pumping Started', 'Pumping Stopped', 'Hose Disconnect', 'Paperwork Done', 'Departed']
 };
 
@@ -43,5 +52,6 @@ export const TRUCK_REJECTION_REASONS = [
     "Overloaded",
     "Driver Delayed",
     "Terminal Issue",
+    "Equipment Re-check Required",
     "Other"
 ];

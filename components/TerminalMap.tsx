@@ -1,7 +1,7 @@
 import React, { useContext, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Hold } from '../types';
-import { formatInfraName } from '../utils/helpers';
+import { formatInfraName, naturalSort } from '../utils/helpers';
 
 interface TerminalMapProps {
     infrastructure: string[];
@@ -43,23 +43,44 @@ const TerminalMap: React.FC<TerminalMapProps> = ({ infrastructure, holds, onAsse
 
     const { currentTerminalSettings } = context;
 
-    const categorizedInfra = useMemo(() => {
+    const { categorizedVesselInfra, categorizedTruckInfra, categorizedRailInfra } = useMemo(() => {
         const mapping = currentTerminalSettings.infrastructureModalityMapping || {};
-        const categories: { vessel: string[], truck: string[], rail: string[] } = { vessel: [], truck: [], rail: [] };
+        const wharfMapping = currentTerminalSettings.wharfDocklineMapping || {};
         
-        infrastructure.forEach(id => {
-            const modality = mapping[id];
-            if (modality && categories[modality]) {
-                categories[modality].push(id);
-            }
-        });
+        // FIX: Add array check to prevent crash if infrastructure prop is not an array.
+        const safeInfrastructure = infrastructure || [];
+        const truckInfra = safeInfrastructure.filter(id => mapping[id] === 'truck').sort(naturalSort);
+        const railInfra = safeInfrastructure.filter(id => mapping[id] === 'rail').sort(naturalSort);
+        
+        const vesselDocklines = safeInfrastructure.filter(id => mapping[id] === 'vessel');
+        let vesselInfra: { wharf: string; docklines: string[] }[] = [];
 
-        return categories;
+        if (Object.keys(wharfMapping).length > 0) {
+            vesselInfra = Object.entries(wharfMapping).map(([wharf, docklines]) => ({
+                wharf,
+                // FIX: Add Array.isArray check to prevent crash if docklines is not an array, which can happen with malformed data.
+                docklines: (Array.isArray(docklines) ? docklines : []).sort(naturalSort)
+            }));
+            const mappedDocklines = new Set(Object.values(wharfMapping).flat());
+            const unmapped = vesselDocklines.filter(id => !mappedDocklines.has(id));
+            if (unmapped.length > 0) {
+                vesselInfra.push({ wharf: 'Other Docks', docklines: unmapped.sort(naturalSort) });
+            }
+        } else {
+            // Fallback for terminals without the new mapping
+            if (vesselDocklines.length > 0) {
+                vesselInfra.push({ wharf: 'Docks', docklines: vesselDocklines.sort(naturalSort) });
+            }
+        }
+
+        return {
+            categorizedVesselInfra: vesselInfra,
+            categorizedTruckInfra: truckInfra,
+            categorizedRailInfra: railInfra
+        };
     }, [infrastructure, currentTerminalSettings]);
 
     const getHoldForAsset = (assetId: string): Hold | undefined => {
-        // An asset is considered "on hold" if there is an *active* hold for it.
-        // An active hold is approved and not yet resolved (i.e., its work order is not 'Closed').
         return holds.find(h => 
             h.resource === assetId && 
             h.status === 'approved' &&
@@ -73,9 +94,16 @@ const TerminalMap: React.FC<TerminalMapProps> = ({ infrastructure, holds, onAsse
                 {/* Docks */}
                 <div className="p-4 border-2 border-dashed rounded-lg">
                     <h4 className="font-semibold text-lg text-text-secondary mb-3">Docks (Vessel)</h4>
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                        {categorizedInfra.vessel.map(id => (
-                            <Asset key={id} assetId={id} hold={getHoldForAsset(id)} onClick={() => onAssetClick(id)} icon="fa-ship" />
+                    <div className="space-y-4">
+                        {categorizedVesselInfra.map(({ wharf, docklines }) => (
+                            <div key={wharf}>
+                                <h5 className="font-bold text-sm text-slate-600 mb-2 pl-1">{wharf}</h5>
+                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                    {docklines.map(id => (
+                                        <Asset key={id} assetId={id} hold={getHoldForAsset(id)} onClick={() => onAssetClick(id)} icon="fa-ship" />
+                                    ))}
+                                </div>
+                            </div>
                         ))}
                     </div>
                 </div>
@@ -84,7 +112,7 @@ const TerminalMap: React.FC<TerminalMapProps> = ({ infrastructure, holds, onAsse
                 <div className="p-4 border-2 border-dashed rounded-lg">
                     <h4 className="font-semibold text-lg text-text-secondary mb-3">Loading Bays (Truck)</h4>
                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                        {categorizedInfra.truck.map(id => (
+                        {categorizedTruckInfra.map(id => (
                             <Asset key={id} assetId={id} hold={getHoldForAsset(id)} onClick={() => onAssetClick(id)} icon="fa-truck" />
                         ))}
                     </div>
@@ -94,7 +122,7 @@ const TerminalMap: React.FC<TerminalMapProps> = ({ infrastructure, holds, onAsse
                 <div className="p-4 border-2 border-dashed rounded-lg">
                     <h4 className="font-semibold text-lg text-text-secondary mb-3">Sidings (Rail)</h4>
                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                        {categorizedInfra.rail.map(id => (
+                        {categorizedRailInfra.map(id => (
                             <Asset key={id} assetId={id} hold={getHoldForAsset(id)} onClick={() => onAssetClick(id)} icon="fa-train" />
                         ))}
                     </div>

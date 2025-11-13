@@ -1,3 +1,4 @@
+
 import React, { useContext, useState, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, DipSheetEntry, Transfer } from '../types';
@@ -6,7 +7,7 @@ const DipSheet: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return <div>Loading context...</div>;
 
-    const { activeOpId, getOperationById, saveCurrentPlan, currentUser, currentTerminalSettings, editingOp, setEditingOp } = context;
+    const { activeOpId, getOperationById, saveCurrentPlan, currentUser, currentTerminalSettings, editingOp, setEditingOp, simulatedTime } = context;
 
     const op = getOperationById(activeOpId);
     
@@ -37,71 +38,66 @@ const DipSheet: React.FC = () => {
         return { pumpingStartTime: startTime, tankInfo: info, safeFill: fill, tankName: tn };
     }, [primaryTransfer, currentTerminalSettings]);
     
-    // Auto-logger effect
+    // Auto-logger effect - runs on every simulatedTime update
     useEffect(() => {
         if (!op || !pumpingStartTime || !primaryTransfer || !editingOp) {
             return; // Don't run if op isn't active or pumping hasn't started
         }
 
-        const intervalId = setInterval(() => {
-            setEditingOp(currentOp => {
-                if (!currentOp) return null;
+        setEditingOp(currentOp => {
+            if (!currentOp) return null;
 
-                const currentData = currentOp.dipSheetData || [];
-                const lastEntry = currentData[currentData.length - 1];
-                if (!lastEntry) return currentOp;
+            const currentData = currentOp.dipSheetData || [];
+            const lastEntry = currentData[currentData.length - 1];
+            if (!lastEntry) return currentOp;
 
-                let lastEntryTime: Date;
-                if (lastEntry.time) {
-                    const [hours, minutes] = lastEntry.time.split(':').map(Number);
-                    lastEntryTime = new Date(pumpingStartTime); // Use pumping start date as base
-                    lastEntryTime.setHours(hours, minutes, 0, 0);
-                } else if (lastEntry.isStartRow) {
-                    lastEntryTime = pumpingStartTime;
-                } else {
-                     return currentOp; // Cannot determine time of last entry
-                }
+            let lastEntryTime: Date;
+            if (lastEntry.time) {
+                const [hours, minutes] = lastEntry.time.split(':').map(Number);
+                lastEntryTime = new Date(pumpingStartTime); // Use pumping start date as base
+                lastEntryTime.setHours(hours, minutes, 0, 0);
+            } else if (lastEntry.isStartRow) {
+                lastEntryTime = pumpingStartTime;
+            } else {
+                    return currentOp; // Cannot determine time of last entry
+            }
 
-                const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+            const fifteenMinutesAgo = new Date(simulatedTime.getTime() - 15 * 60 * 1000);
 
-                if (lastEntryTime > fifteenMinutesAgo) {
-                    return currentOp; // Last entry was too recent
-                }
+            if (lastEntryTime > fifteenMinutesAgo) {
+                return currentOp; // Last entry was too recent
+            }
 
-                const startVolume = parseFloat(currentData.find(d => d.isStartRow)?.tankInnage || '0');
-                if (startVolume === 0) return currentOp;
+            const startVolume = parseFloat(currentData.find(d => d.isStartRow)?.tankInnage || '0');
+            if (startVolume === 0) return currentOp;
 
-                const latestOp = getOperationById(op.id);
-                const latestPrimaryTransfer = latestOp?.transferPlan.flatMap(tp => tp.transfers)[0];
-                if (!latestPrimaryTransfer) return currentOp;
+            const latestOp = getOperationById(op.id);
+            const latestPrimaryTransfer = latestOp?.transferPlan.flatMap(tp => tp.transfers)[0];
+            if (!latestPrimaryTransfer) return currentOp;
 
-                const transferredTonnes = latestPrimaryTransfer.transferredTonnes || 0;
-                const isIncoming = latestPrimaryTransfer.direction.includes(' to Tank');
-                const newTankInnage = isIncoming ? startVolume + transferredTonnes : startVolume - transferredTonnes;
+            const transferredTonnes = latestPrimaryTransfer.transferredTonnes || 0;
+            const isIncoming = latestPrimaryTransfer.direction.includes(' to Tank');
+            const newTankInnage = isIncoming ? startVolume + transferredTonnes : startVolume - transferredTonnes;
 
-                const now = new Date();
-                const timeString = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-                
-                const newEntry: DipSheetEntry = {
-                    id: `auto-${Date.now()}`,
-                    time: timeString,
-                    dipReading: 'SCADA',
-                    tankInnage: newTankInnage.toFixed(2),
-                    initials: 'AUTO'
-                };
-                
-                if (lastEntry.time === newEntry.time && lastEntry.initials === 'AUTO') {
-                    return currentOp; // Prevent duplicates
-                }
+            const now = simulatedTime;
+            const timeString = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            
+            const newEntry: DipSheetEntry = {
+                id: `auto-${now.getTime()}`,
+                time: timeString,
+                dipReading: 'SCADA',
+                tankInnage: newTankInnage.toFixed(2),
+                initials: 'AUTO'
+            };
+            
+            if (lastEntry.time === newEntry.time && lastEntry.initials === 'AUTO') {
+                return currentOp; // Prevent duplicates
+            }
 
-                return { ...currentOp, dipSheetData: [...currentData, newEntry] };
-            });
+            return { ...currentOp, dipSheetData: [...currentData, newEntry] };
+        });
 
-        }, 60 * 1000); // Check every minute
-
-        return () => clearInterval(intervalId);
-
-    }, [op, pumpingStartTime, primaryTransfer, getOperationById, setEditingOp, editingOp]);
+    }, [simulatedTime, op, pumpingStartTime, primaryTransfer, getOperationById, setEditingOp]);
 
     const sheetData = editingOp?.dipSheetData || [];
 

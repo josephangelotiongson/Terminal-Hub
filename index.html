@@ -9,14 +9,15 @@
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" />
     <script type="importmap">
-    {
-      "imports": {
-        "react": "https://aistudiocdn.com/react@^19.2.0",
-        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-        "react/": "https://aistudiocdn.com/react@^19.2.0/"
-      }
-    }
-    </script>
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "types": "https://aistudiocdn.com/types@^0.1.1"
+  }
+}
+</script>
     <style>
         :root {
             --brand-primary: #4f46e5;
@@ -40,8 +41,8 @@
         .card {
             background-color: var(--background-card);
             border: 1px solid var(--border-primary);
-            border-radius: 0.75rem;
-            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+            border-radius: 0;
+            box-shadow: none;
         }
 
         /* Button Styles - Increased padding for tablets */
@@ -52,7 +53,7 @@
             padding: 0.75rem 1.25rem;
             font-size: 0.875rem;
             font-weight: 600;
-            border-radius: 0.5rem;
+            border-radius: 0;
             border: 1px solid transparent;
             transition: all 0.2s;
             cursor: pointer;
@@ -82,12 +83,12 @@
             display: block; width: 100%;
             padding: 0.75rem 1rem; /* Increased padding */
             border: 1px solid var(--border-primary);
-            border-radius: 0.5rem;
+            border-radius: 0;
             background-color: #f8fafc;
             color: var(--text-primary);
             font-size: 0.875rem;
         }
-        input:focus, select:focus, textarea:focus { outline: 2px solid transparent; outline-offset: 2px; border-color: var(--brand-primary); box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2); }
+        input:focus, select:focus, textarea:focus { outline: 2px solid transparent; outline-offset: 2px; border-color: var(--brand-primary); box-shadow: none; }
 
         /* Tabs */
         .tab {
@@ -109,15 +110,15 @@
         .compatibility-x { background-color: #fee2e2; color: #991b1b; }
         
         /* --- NEW SOF Slider Styles --- */
-        .sof-item { 
-            display: flex; 
-            align-items: center; 
-            gap: 1rem;
-            padding: 1rem;
+        .sof-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.25rem 0.75rem; /* More compact */
             border: 1px solid var(--border-primary);
-            border-radius: 0.75rem;
+            border-radius: 0;
             position: relative;
-            min-height: 80px;
+            min-height: 48px; /* More compact */
             background-color: var(--background-card);
         }
         
@@ -126,8 +127,8 @@
         .sof-item.complete { background-color: #f0fdf4; border-color: #a7f3d0; }
 
         .sof-icon { 
-            width: 3.5rem; height: 3.5rem; /* 56px */
-            border-radius: 9999px; 
+            width: 2.5rem; height: 2.5rem; /* 40px */
+            border-radius: 0; 
             display: flex; 
             align-items: center; 
             justify-content: center; 
@@ -138,14 +139,14 @@
         
         .sof-slider-track {
             position: relative;
-            width: 10rem; /* Fixed width track */
-            height: 3.5rem; /* 56px, big enough for gloves */
-            border-radius: 9999px;
+            width: 8rem; /* Slightly smaller track */
+            height: 2.5rem; /* 40px, big enough for gloves */
+            border-radius: 0;
             display: flex;
             align-items: center;
             justify-content: space-between;
             padding: 0 0.5rem;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+            box-shadow: none;
             flex-shrink: 0;
             touch-action: none; /* Prevent scrolling while dragging slider */
             cursor: grab;
@@ -161,12 +162,12 @@
             position: absolute;
             top: 0;
             left: 0;
-            width: 3.5rem; /* 56px */
-            height: 3.5rem; /* 56px */
-            border-radius: 9999px;
+            width: 2.5rem; /* 40px */
+            height: 2.5rem; /* 40px */
+            border-radius: 0;
             background-color: white;
-            border: 4px solid;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            border: 3px solid; /* Slightly thinner border */
+            box-shadow: none;
             pointer-events: none;
             display: flex;
             align-items: center;
@@ -176,7 +177,7 @@
         }
 
         .sof-slider-target-icon {
-            font-size: 1.5rem; /* 24px */
+            font-size: 1.25rem; /* 20px */
         }
         
         /* In-progress state (slide right to complete) */
@@ -192,7 +193,7 @@
         .sof-item.complete .sof-slider-thumb .sof-slider-icon { color: #22c55e; } /* green-500 */
         
         .sof-slider-icon {
-            font-size: 1.5rem; /* 24px */
+            font-size: 1.25rem; /* 20px */
             pointer-events: none; /* Make sure icon doesn't interfere with drag events */
         }
 
@@ -203,7 +204,7 @@
             padding: 0.375rem 0.75rem;
             font-size: 0.8rem;
             font-weight: 600;
-            border-radius: 0.375rem;
+            border-radius: 0;
             cursor: pointer;
             transition: all 0.2s;
             flex-shrink: 0;
@@ -227,7 +228,7 @@
             width: 100%;
             height: 1.5rem;
             background-color: #e2e8f0;
-            border-radius: 0.25rem;
+            border-radius: 0;
             overflow: hidden;
         }
         .tank-level-bar {
@@ -261,16 +262,16 @@
         }
         
         /* Planning Board Grid */
-        .planning-grid-container { display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: 0.75rem; }
+        .planning-grid-container { display: flex; flex-direction: column; border: 1px solid var(--border-primary); border-radius: 0; }
         .planning-grid-header { display: flex; flex-shrink: 0; background-color: #f8fafc; border-bottom: 1px solid var(--border-primary); }
         .planning-grid-header-spacer { width: 5rem; flex-shrink: 0; border-right: 1px solid var(--border-primary); }
         .planning-grid-header-items { display: flex; }
         .planning-grid-header-item { width: 160px; text-align: center; padding: 0.75rem 0.5rem; font-weight: 600; color: var(--text-secondary); border-right: 1px solid var(--border-primary); }
-        .planning-grid-scroll-area { overflow: auto; position: relative; max-height: 70vh; }
+        .planning-grid-scroll-area { position: relative; }
         .planning-grid-content-wrapper { position: relative; display: flex; }
         .planning-grid-timeline { width: 5rem; flex-shrink: 0; background-color: #f8fafc; }
         .planning-grid-main { position: relative; flex-grow: 1; }
-        .planning-grid-item { position: absolute; border-radius: 0.375rem; padding: 0.25rem 0.5rem; color: white; cursor: pointer; overflow: hidden; font-size: 0.8rem; font-weight: 600; border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .planning-grid-item { position: absolute; border-radius: 0; padding: 0.25rem 0.5rem; color: white; cursor: pointer; overflow: hidden; font-size: 0.8rem; font-weight: 600; border: 1px solid rgba(0,0,0,0.1); box-shadow: none; }
         .planning-grid-hold { position: absolute; background-color: rgba(239, 68, 68, 0.15); border-left: 3px solid #ef4444; color: #991b1b; padding: 0.25rem; font-size: 0.75rem; font-weight: 500; z-index: 15; cursor: pointer; overflow: hidden; }
         .planning-grid-pending-hold {
             position: absolute;
@@ -291,37 +292,66 @@
             overflow: hidden;
         }
         .current-time-indicator { position: absolute; height: 2px; background-color: #dc2626; z-index: 20; pointer-events: none; }
-        .current-time-indicator::before { content: ''; position: absolute; top: -4px; left: -5px; width: 10px; height: 10px; background-color: #dc2626; border-radius: 9999px; }
+        .current-time-indicator::before { content: ''; position: absolute; top: -4px; left: -5px; width: 10px; height: 10px; background-color: #dc2626; border-radius: 0; }
         .selection-box { position: absolute; background-color: rgba(79, 70, 229, 0.2); border: 1px dashed var(--brand-primary); z-index: 10; pointer-events: none; }
         .conflicted-op { border: 2px dashed #ef4444 !important; }
 
-        /* Planning Grid Item Colors - NEW SIMPLIFIED SCHEME */
+        /* Planning Grid Item Colors - UPDATED SCHEME */
         .status-rejected { background-color: #be123c; } /* rose-700 - Red for issues/cancelled */
+        .status-completing { background-color: #94a3b8; } /* slate-400 - Light grey for final steps */
         .status-departed { background-color: #475569; } /* slate-600 - Grey for completed */
         .status-loading { background-color: #16a34a; } /* green-600 - Green for active/loading */
+        .status-arrived { background-color: #1d4ed8; } /* blue-700 - Dark blue for arrived */
+        .status-approved { background-color: #a3e635; color: black; } /* lime-500 - Light green for approved/waiting */
         .status-delayed { background-color: #be123c; } /* Same red as rejected */
-        .status-planned { background-color: #f97316; } /* orange-500 - Yellow for planned */
+        .status-planned { background-color: #60a5fa; color: black; } /* blue-400 - Light blue for planned */
 
         /* Legend */
         .legend-container { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.5rem; padding-left: 0.5rem; }
 
         /* Planning view toggle */
-        .planning-board-view-toggle { display: inline-flex; background-color: #e2e8f0; border-radius: 0.5rem; padding: 0.25rem; }
-        .view-toggle-btn { padding: 0.375rem 0.75rem; border: none; background-color: transparent; border-radius: 0.375rem; font-size: 1rem; color: var(--text-secondary); cursor: pointer; }
-        .view-toggle-btn.active { background-color: white; color: var(--brand-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .planning-board-view-toggle { display: inline-flex; background-color: #e2e8f0; border-radius: 0; padding: 0.25rem; }
+        .view-toggle-btn { padding: 0.375rem 0.75rem; border: none; background-color: transparent; border-radius: 0; font-size: 1rem; color: var(--text-secondary); cursor: pointer; }
+        .view-toggle-btn.active { background-color: white; color: var(--brand-primary); box-shadow: none; }
 
         /* Modality filter */
-        .planning-board-filters { display: inline-flex; background-color: #e2e8f0; border-radius: 0.5rem; padding: 0.25rem; }
-        .filter-btn { padding: 0.75rem 1.25rem; border: none; background-color: transparent; border-radius: 0.375rem; font-size: 0.9rem; font-weight: 600; color: var(--text-secondary); cursor: pointer; }
-        .filter-btn.active { background-color: white; color: var(--brand-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .planning-board-filters { display: inline-flex; background-color: #e2e8f0; border-radius: 0; padding: 0.25rem; }
+        .filter-btn { padding: 0.75rem 1.25rem; border: none; background-color: transparent; border-radius: 0; font-size: 0.9rem; font-weight: 600; color: var(--text-secondary); cursor: pointer; }
+        .filter-btn.active { background-color: white; color: var(--brand-primary); box-shadow: none; }
 
         /* Stepped Progress Bar */
         .stepped-progress-bar { display: flex; gap: 4px; width: 100%; }
-        .progress-step { flex: 1; text-align: center; padding: 1rem 0.5rem; font-size: 0.875rem; font-weight: 600; border-radius: 0.375rem; transition: all 0.3s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .progress-step { flex: 1; text-align: center; padding: 1rem 0.5rem; font-size: 0.875rem; font-weight: 600; border-radius: 0; transition: all 0.3s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .progress-step span { display: block; }
         .step-pending { background-color: #e2e8f0; color: #64748b; }
         .step-active { background-color: #3b82f6; color: white; }
         .step-complete { background-color: #22c55e; color: white; }
+
+        /* Blinking dot for notifications */
+        .blinking-dot {
+            height: 8px;
+            width: 8px;
+            background-color: #ef4444; /* red-500 */
+            border-radius: 0;
+            display: inline-block;
+            margin-left: 6px;
+            animation: blink-animation 1s infinite;
+        }
+
+        @keyframes blink-animation {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* --- Engineering UI Overrides for Tailwind --- */
+        .rounded-sm, .rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl, .rounded-3xl, .rounded-full,
+        [class*="rounded-t-"], [class*="rounded-r-"], [class*="rounded-b-"], [class*="rounded-l-"],
+        [class*="rounded-tr-"], [class*="rounded-tl-"], [class*="rounded-br-"], [class*="rounded-bl-"] {
+            border-radius: 0 !important;
+        }
+        .shadow-sm, .shadow, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl, .shadow-inner {
+            box-shadow: none !important;
+        }
     </style>
 </head>
 <body>

@@ -1,39 +1,39 @@
+
 import { Operation, AppSettings, Hold } from '../types';
-import { MOCK_OPERATIONS, DEFAULT_SETTINGS } from './mockData';
+import { createMockOperations, createMockHolds } from './mockData';
+import { createMockHistoricalOperations } from './mockHistoricalData';
+import { DEFAULT_SETTINGS } from './masterData';
 
 const loadOperations = (): Operation[] => {
+    // DEMO MODE: Force clear local storage to ensure fresh data on reload
+    localStorage.removeItem('all_ops_data');
+
+    // Generate fresh data
+    const liveOps = createMockOperations();
+    const historicalOps = createMockHistoricalOperations();
+    const allOps = [...historicalOps, ...liveOps];
+    
+    // Save the newly generated data to localStorage for session persistence
     try {
-        const stored = localStorage.getItem('operations_data');
-        if (stored) {
-            return JSON.parse(stored);
-        }
+        localStorage.setItem('all_ops_data', JSON.stringify(allOps));
     } catch (error) {
-        console.error('Failed to load operations from localStorage', error);
+        console.error('Failed to save initial operations to localStorage', error);
     }
-    // Fallback to the centralized mock data
-    return MOCK_OPERATIONS;
+    
+    return allOps;
 };
 
 const saveOperations = (operations: Operation[]): void => {
     try {
-        localStorage.setItem('operations_data', JSON.stringify(operations));
+        localStorage.setItem('all_ops_data', JSON.stringify(operations));
     } catch (error) {
         console.error('Failed to save operations to localStorage', error);
     }
 };
 
 const loadSettings = (): AppSettings => {
-    try {
-        const stored = localStorage.getItem('settings_data');
-        if (stored) {
-            const parsed = JSON.parse(stored);
-            // Simple merge to ensure new settings from code are available if not in localStorage
-            return { ...DEFAULT_SETTINGS, ...parsed };
-        }
-    } catch (error) {
-        console.error('Failed to load settings from localStorage', error);
-    }
-    // Fallback to the centralized default settings
+    // DEMO MODE: Force clear local storage
+    localStorage.removeItem('settings_data');
     return DEFAULT_SETTINGS;
 };
 
@@ -46,27 +46,17 @@ const saveSettings = (settings: AppSettings): void => {
 };
 
 const loadHolds = (terminal: string): Hold[] => {
+    // DEMO MODE: Force clear local storage
+    localStorage.removeItem(`holds_data_${terminal}`);
+
+    const mockHolds = createMockHolds(terminal);
+    // Save the initial mock data so it's available on next load
     try {
-        const stored = localStorage.getItem(`holds_data_${terminal}`);
-        if (stored) {
-            return JSON.parse(stored);
-        }
+        localStorage.setItem(`holds_data_${terminal}`, JSON.stringify(mockHolds));
     } catch (error) {
-        console.error('Failed to load holds from localStorage', error);
+        console.error('Failed to save initial holds to localStorage', error);
     }
-    // Initialize with holds from mock data for the selected terminal
-    const initialHolds = MOCK_OPERATIONS.filter(op => op.terminal === terminal && op.modality === 'vessel' && op.currentStatus === 'On Hold').map(op => ({
-        id: `hold-${op.id}`,
-        resource: op.transferPlan[0].infrastructureId,
-        terminal: op.terminal,
-        startTime: op.eta,
-        endTime: new Date(new Date(op.eta).getTime() + 4 * 3600 * 1000).toISOString(),
-        reason: 'Maintenance',
-        user: 'Auto-Gen',
-        status: 'approved'
-    } as Hold));
-    
-    return initialHolds; 
+    return mockHolds;
 };
 
 const saveHolds = (holds: Hold[], terminal: string): void => {

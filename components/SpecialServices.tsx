@@ -1,4 +1,4 @@
-import React, { useContext, useState, useEffect } from 'react';
+import React, { useContext, useState, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Modality, SpecialServiceData, Transfer } from '../types';
 import Modal from './Modal';
@@ -16,13 +16,24 @@ const SpecialServices: React.FC<SpecialServicesProps> = ({ isOpen, onClose, tran
     if (!context) return null;
 
     const { settings } = context;
-    // FIX: Initialize state directly from props using a lazy initializer.
-    // This is a more robust pattern for components that mount/unmount, like modals.
-    const [selectedServices, setSelectedServices] = useState<string[]>(
-        () => (transfer.specialServices || []).map(s => s.name)
-    );
+    const [selectedServices, setSelectedServices] = useState<string[]>([]);
 
-    const availableServices = settings.specialServices?.[modality] || [];
+    // FIX: Use useEffect to sync state with props when the modal opens.
+    // This prevents showing stale data from a previously edited transfer.
+    useEffect(() => {
+        if (isOpen) {
+            setSelectedServices((transfer.specialServices || []).map(s => s.name));
+        }
+    }, [isOpen, transfer]);
+
+    const availableServices = useMemo(() => {
+        const modServices = settings.modalityServices?.[modality] || [];
+        const prodServices = settings.productServices || [];
+        // Combine modality-specific and product-specific services for all modalities.
+        const services = [...modServices, ...prodServices];
+        return [...new Set(services)].sort();
+    }, [modality, settings]);
+
 
     const handleCheckboxChange = (serviceName: string, isChecked: boolean) => {
         if (isChecked) {

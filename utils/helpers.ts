@@ -1,5 +1,7 @@
-import { Operation, SOFItem, Transfer, AppSettings, Modality, CalibrationPoint, TerminalSettings, Hold } from '../types';
-import { SOF_EVENTS_MODALITY } from '../constants';
+
+
+import { Operation, SOFItem, Transfer, AppSettings, Modality, CalibrationPoint, TerminalSettings, Hold, OperationStatus, User } from '../types';
+import { SOF_EVENTS_MODALITY, VESSEL_COMMON_EVENTS, VESSEL_COMMODITY_EVENTS } from '../constants';
 
 // Helper function for conditional class names
 export const cn = (...classes: (string | boolean | undefined)[]) => {
@@ -16,8 +18,30 @@ export const formatCurrency = (value: number | undefined) => {
     return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 };
 
-// FIX: Export getOperationDurationHours to make it available for AppContext.
+export const formatFileSize = (bytes: number, decimals = 2): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+};
+
+// FIX: Added and exported the 'getIcon' helper function to be used across multiple components.
+export const getIcon = (modality: Modality): string => {
+    switch (modality) {
+        case 'vessel': return 'fa-ship';
+        case 'truck': return 'fa-truck';
+        case 'rail': return 'fa-train';
+        default: return 'fa-question-circle';
+    }
+};
+
+
 export const getOperationDurationHours = (op: Operation): number => {
+    if (op.durationHours && typeof op.durationHours === 'number' && op.durationHours > 0) {
+        return op.durationHours;
+    }
     switch (op.modality) {
         case 'vessel': return 4;
         case 'truck': return 1;
@@ -83,6 +107,75 @@ export const formatInfraName = (infraId: string): string => {
     return infraId;
 };
 
+// --- NEW PERMISSION HELPERS ---
+
+export const canCreateOperation = (user: User): boolean => {
+    return user.role === 'Terminal Planner';
+};
+
+export const canCreateHold = (user: User): boolean => {
+    return ['Operations Lead', 'Operator'].includes(user.role);
+};
+
+export const canEditPlan = (user: User): boolean => {
+    // User request: "Ops lead and dispatcher can ... edit the plan of for the truck."
+    // This also implicitly allows editing other plans, which is a reasonable default.
+    return ['Operations Lead', 'Dispatch'].includes(user.role);
+};
+
+export const canReschedule = (user: User, op: Operation | null): boolean => {
+    if (!op) {
+        // Fallback for generic cases where op is not available
+        return ['Operations Lead', 'Dispatch', 'Terminal Planner'].includes(user.role);
+    }
+    // User request: "Ops lead and dispatcher can reschedule ... for the truck."
+    if (op.modality === 'truck') {
+        return ['Operations Lead', 'Dispatch'].includes(user.role);
+    }
+    // For other modalities, allow Terminal Planner as well
+    return ['Operations Lead', 'Dispatch', 'Terminal Planner'].includes(user.role);
+};
+
+export const canPerformSofAction = (user: User, opModality: Modality, sofEventName: string): boolean => {
+    const eventBaseName = sofEventName.replace(/^(Rework #\d+: )?(.*)$/, '$2');
+
+    if (user.role === 'Operations Lead') {
+        return true;
+    }
+
+    if (opModality === 'truck') {
+        const dispatchSteps = ['Arrived', 'Ready / Approved', 'Directed to Bay', 'Paperwork Done', 'BOL Printed', 'Departed'];
+        const operatorSteps = ['On Bay', 'Pumping Started', 'Pumping Stopped', 'Post-Load Weighing', 'Seal Applied'];
+
+        if (user.role === 'Dispatch') {
+            return dispatchSteps.includes(eventBaseName);
+        }
+        if (user.role === 'Operator') {
+            return operatorSteps.includes(eventBaseName);
+        }
+    } else { // For vessel and rail, the rules are simpler for now
+        if (user.role === 'Operator' || user.role === 'Dispatch') {
+            return true;
+        }
+    }
+
+    return false;
+};
+
+export const canDispatchTrucks = (user: User): boolean => {
+    return ['Operations Lead', 'Dispatch'].includes(user.role);
+};
+
+export const canApproveGate = (user: User): boolean => {
+    return ['Operations Lead', 'Dispatch'].includes(user.role);
+};
+
+export const canEditCompletedOpFinancials = (user: User): boolean => {
+    return ['Operations Lead', 'Commercials'].includes(user.role);
+}
+
+// --- END PERMISSION HELPERS ---
+
 export const calculateOperationValue = (operation: Operation, settings: AppSettings): { throughputValue: number; servicesValue: number; totalValue: number } => {
     if (!settings.contracts) {
         return { throughputValue: 0, servicesValue: 0, totalValue: 0 };
@@ -92,15 +185,17 @@ export const calculateOperationValue = (operation: Operation, settings: AppSetti
     let throughputValue = 0;
     let servicesValue = 0;
 
-    operation.transferPlan.forEach(tp => {
-        tp.transfers.forEach(t => {
+    // FIX: Add array check for safety when iterating
+    (operation.transferPlan || []).forEach(tp => {
+        // FIX: Add array check for safety when iterating
+        (tp.transfers || []).forEach(t => {
             // Calculate throughput value
             const rate = customerRates?.[t.customer]?.[t.product]?.ratePerTonne || 0;
             const tonnes = operation.status === 'completed' ? t.tonnes : (t.transferredTonnes ?? t.tonnes);
             throughputValue += tonnes * rate;
 
             // Calculate services value
-            t.specialServices.forEach(s => {
+            (t.specialServices || []).forEach(s => {
                 servicesValue += serviceRates?.[s.name] || 0;
             });
         });
@@ -113,73 +208,48 @@ export const calculateOperationValue = (operation: Operation, settings: AppSetti
     };
 };
 
-export const calculateOperationProgress = (op: Operation | null): { completed: number, total: number, percentage: number } => {
-    if (!op) return { completed: 0, total: 0, percentage: 0 };
-
-    // For non-active ops, progress is 0 or 100.
-    if (op.status !== 'active') {
-        const totalSteps = (SOF_EVENTS_MODALITY[op.modality]?.length || 1) * (op.transferPlan?.flatMap(tp => tp.transfers).length || 1);
-        const percentage = op.status === 'completed' ? 100 : 0;
-        return { completed: percentage === 100 ? totalSteps : 0, total: totalSteps, percentage };
+export const calculateOperationProgress = (op: Operation | null, infraId?: string): { completed: number, total: number, percentage: number } => {
+    if (!op) {
+        return { completed: 0, total: 1, percentage: 0 };
     }
 
-    let totalSofWeight = 0;
-    let completedSofWeight = 0;
+    const transfersToConsider = (op.transferPlan || [])
+        .filter(line => !infraId || line.infrastructureId === infraId)
+        .flatMap(line => line.transfers);
 
-    op.transferPlan.forEach(tp => {
-        tp.transfers.forEach(t => {
-            const sof = t.sof || [];
-            const modalitySteps = SOF_EVENTS_MODALITY[op.modality] || [];
-            
-            // Group SOF items by loop to handle reworks correctly
-            const sofByLoop: Record<number, SOFItem[]> = sof.reduce((acc: Record<number, SOFItem[]>, s: SOFItem) => {
-                (acc[s.loop] = acc[s.loop] || []).push(s);
-                return acc;
-            }, {});
+    const totalTonnes = transfersToConsider.reduce((sum, t) => sum + (t.tonnes || 0), 0);
 
-            // Consider progress only for the latest loop
-            const latestLoopNum = Math.max(0, ...Object.keys(sofByLoop).map(Number));
-            const latestLoopSof = sofByLoop[latestLoopNum] || [];
-
-            totalSofWeight += modalitySteps.length;
-            
-            let completedStepsInLoop = 0;
-            let pumpingStarted = false;
-            let pumpingStopped = false;
-
-            latestLoopSof.forEach(s => {
-                if (s.status === 'complete') {
-                    completedStepsInLoop++;
-                    const eventName = s.event.replace(/^(Rework #\d+: )/, '');
-                    if (eventName === 'Pumping Started') pumpingStarted = true;
-                    if (eventName === 'Pumping Stopped') pumpingStopped = true;
-                }
-            });
-
-            if (pumpingStarted && !pumpingStopped) {
-                // Pumping is active. Calculate fractional progress for this step.
-                const tonnesProgress = (t.transferredTonnes || 0) / (t.tonnes || 1);
-                // Subtract the 'Pumping Started' step that was counted as whole, and add its fractional progress.
-                completedSofWeight += (completedStepsInLoop - 1 + Math.min(tonnesProgress, 1));
-            } else {
-                completedSofWeight += completedStepsInLoop;
-            }
-        });
-    });
-
-    if (totalSofWeight === 0) {
-        // Fallback for active ops without SOF initialized
-        const numTransfers = op.transferPlan?.flatMap(tp => tp.transfers).length || 1;
-        const totalSteps = (SOF_EVENTS_MODALITY[op.modality]?.length || 1) * numTransfers;
-        return { completed: 0, total: totalSteps > 0 ? totalSteps : 1, percentage: 0 };
+    if (totalTonnes === 0) {
+        return { completed: 0, total: 0, percentage: 0 };
     }
+
+    // For cancelled ops, progress is always 0.
+    if (op.status === 'cancelled') {
+        return { completed: 0, total: totalTonnes, percentage: 0 };
+    }
+
+    // For all other statuses (planned, active, completed), calculate based on actual transferred volume.
+    // For 'planned', transferredTonnes will be 0.
+    // For 'completed', transferredTonnes will be forced to equal totalTonnes.
+    let transferredTonnes = transfersToConsider.reduce((sum, t) => 
+        sum + (t.transferredTonnes || 0) + (t.slopsTransferredTonnes || 0), 
+        0
+    );
+
+    // If the operation is marked complete, we assume 100% of the planned volume was transferred.
+    if (op.status === 'completed') {
+        transferredTonnes = totalTonnes;
+    }
+
+    // Clamp transferred tonnes to not exceed total planned tonnes.
+    transferredTonnes = Math.min(transferredTonnes, totalTonnes);
+
+    const percentage = (transferredTonnes / totalTonnes) * 100;
     
-    const percentage = totalSofWeight > 0 ? (completedSofWeight / totalSofWeight) * 100 : 0;
-
     return {
-        completed: Math.round(completedSofWeight),
-        total: totalSofWeight,
-        percentage: Math.min(percentage, 100) // Cap at 100%
+        completed: transferredTonnes,
+        total: totalTonnes,
+        percentage: Math.min(100, Math.max(0, percentage)), // Clamp between 0 and 100
     };
 };
 
@@ -216,8 +286,8 @@ export const getActiveTransfers = (op: Operation): Transfer[] => {
 
     const activeTransfers: Transfer[] = [];
 
-    op.transferPlan?.forEach(tp => {
-        tp.transfers?.forEach(t => {
+    (op.transferPlan || []).forEach(tp => {
+        (tp.transfers || []).forEach(t => {
             if (!t.sof || t.sof.length === 0) {
                 return;
             }
@@ -292,24 +362,54 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
     const issues: string[] = [];
     const { masterTanks, docklines } = terminalSettings;
 
-    if (!op.transferPlan || op.transferPlan.length === 0) {
+    if (!Array.isArray(op.transferPlan) || op.transferPlan.length === 0) {
         issues.push("Plan has no infrastructure or transfers.");
     }
 
-    op.transferPlan.forEach((line, lineIndex) => {
+    (op.transferPlan || []).forEach((line, lineIndex) => {
         if (!line.infrastructureId) {
             issues.push(`Lineup #${lineIndex + 1}: Missing infrastructure assignment.`);
         }
 
-        if (line.transfers.length === 0 && op.modality !== 'truck') { // Trucks might not have a transfer initially
+        if (!Array.isArray(line.transfers) || (line.transfers.length === 0 && op.modality !== 'truck')) {
             issues.push(`Lineup #${lineIndex + 1} (${formatInfraName(line.infrastructureId)}): No transfers planned.`);
         }
+        
+        (line.transfers || []).forEach((transfer, transferIndex) => {
+            // --- CONSOLIDATED INCOMPATIBILITY CHECKS ---
+            let prevProduct: string | undefined;
+            let context = '';
 
-        line.transfers.forEach((transfer, transferIndex) => {
+            if (transferIndex === 0) {
+                // First transfer on the line: check against last product used on the infrastructure
+                prevProduct = docklines?.[line.infrastructureId]?.lastProduct;
+                if (prevProduct) {
+                    context = `Last product on ${formatInfraName(line.infrastructureId)} was ${prevProduct}.`;
+                }
+            } else {
+                // Subsequent transfer: check against the previous transfer in this operation's plan
+                prevProduct = line.transfers[transferIndex - 1]?.product;
+                if (prevProduct) {
+                    context = `Previous transfer was ${prevProduct}.`;
+                }
+            }
+
+            if (prevProduct && transfer.product) {
+                const prevGroup = allSettings.productGroups[prevProduct];
+                const currentGroup = allSettings.productGroups[transfer.product];
+
+                if (prevGroup && currentGroup && allSettings.compatibility[prevGroup]?.[currentGroup] === 'X') {
+                    // If incompatible, the plan is only valid if cleaning is explicitly scheduled.
+                    if (!transfer.preTransferCleaningSof || transfer.preTransferCleaningSof.length === 0) {
+                        issues.push(`INCOMPATIBLE: Cleaning required before transferring ${transfer.product}. ${context}`);
+                    }
+                }
+            }
+
+            // --- OTHER VALIDATION CHECKS (Mappings, Tanks, etc.) ---
             const isToTank = transfer.direction.endsWith(' to Tank');
             const isFromTank = transfer.direction.startsWith('Tank to');
 
-            // MASTER DATA VALIDATION: Check if a valid tank can even be selected
             if (transfer.customer && transfer.product && line.infrastructureId && (isToTank || isFromTank)) {
                 const customerAllowedTanks = terminalSettings.customerMatrix
                     ?.find(m => m.customer === transfer.customer && m.product === transfer.product)?.tanks || [];
@@ -325,7 +425,6 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
                 }
             }
 
-            // Check for missing tanks
             if (isToTank && !transfer.to) {
                 issues.push(`Transfer #${transferIndex + 1} (${transfer.product || 'New'}): Missing destination tank.`);
             }
@@ -333,7 +432,6 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
                 issues.push(`Transfer #${transferIndex + 1} (${transfer.product || 'New'}): Missing source tank.`);
             }
             
-            // Check for unsafe transfers if tanks are selected
             if (isToTank || isFromTank) {
                 const tankName = isToTank ? transfer.to : transfer.from;
                 const tankData = masterTanks?.[tankName];
@@ -354,23 +452,9 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
                     }
                 }
             }
-            
-            // Check for compatibility
-            if (line.infrastructureId && transfer.product) {
-                const dockline = docklines?.[line.infrastructureId];
-                if (dockline) {
-                    const lastProduct = dockline.lastProduct;
-                    const lastGroup = allSettings.productGroups[lastProduct];
-                    const currentGroup = allSettings.productGroups[transfer.product];
-
-                    if (lastGroup && currentGroup && allSettings.compatibility[lastGroup]?.[currentGroup] === 'X') {
-                         issues.push(`INCOMPATIBLE: ${transfer.product} (${currentGroup}) is incompatible with last product on ${formatInfraName(line.infrastructureId)} (${lastProduct} - ${lastGroup}).`);
-                    }
-                }
-            }
         });
 
-         // Check for Hold conflicts
+        // --- HOLD CONFLICT CHECK ---
         if (line.infrastructureId) {
             const opStart = new Date(op.eta).getTime();
             const opEnd = opStart + getOperationDurationHours(op) * 3600 * 1000;
@@ -383,12 +467,11 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
                 const timeOverlap = opStart < holdEnd && opEnd > holdStart;
                 if (!timeOverlap) return false;
 
-                // If hold is for a specific tank, check if the op uses that tank
                 if (hold.tank) {
-                    return line.transfers.some(t => t.from === hold.tank || t.to === hold.tank);
+                    return (line.transfers || []).some(t => t.from === hold.tank || t.to === hold.tank);
                 }
                 
-                return true; // Full infrastructure hold
+                return true;
             });
 
             if (conflictingHold) {
@@ -401,4 +484,239 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
         isValid: issues.length === 0,
         issues,
     };
+};
+
+/**
+ * Derives the currentStatus, truckStatus, and overall status for an operation based on its SOF progress.
+ * @param op The operation to analyze.
+ * @param force Whether to override a "sticky" issue status. Defaults to false.
+ * @returns An object with new statuses if a change is detected, otherwise null.
+ */
+export const deriveStatusFromSof = (op: Operation, force: boolean = false): Partial<Operation> | null => {
+    if (!force) {
+        const stickyIssueStatuses = ['Reschedule Required', 'No Show', 'Delayed'];
+        if (stickyIssueStatuses.includes(op.currentStatus) || op.delay?.active) {
+            return null;
+        }
+    }
+
+    let newStatuses: Partial<Operation> | null = null;
+
+    switch (op.modality) {
+        case 'truck': {
+            const transfer = op.transferPlan?.[0]?.transfers?.[0];
+            if (!transfer?.sof) return null;
+
+            const truckSofEventSequence = SOF_EVENTS_MODALITY['truck'];
+            const completedSofEvents = new Set(
+                transfer.sof.filter(s => s.status === 'complete').map(s => s.event.replace(/^(Rework #\d+: )/, ''))
+            );
+
+            let latestCompletedStep: string | null = null;
+            for (let i = truckSofEventSequence.length - 1; i >= 0; i--) {
+                if (completedSofEvents.has(truckSofEventSequence[i])) {
+                    latestCompletedStep = truckSofEventSequence[i];
+                    break;
+                }
+            }
+
+            let currentStatus = 'Scheduled', truckStatus = 'Planned', status: OperationStatus = 'planned';
+            switch (latestCompletedStep) {
+                case 'Departed': currentStatus = 'Departed'; truckStatus = 'Departed'; status = 'completed'; break;
+                case 'BOL Printed': currentStatus = 'Paperwork'; truckStatus = 'Awaiting Departure'; status = 'active'; break;
+                case 'Seal Applied': currentStatus = 'Sealing'; truckStatus = 'Completing'; status = 'active'; break;
+                case 'Post-Load Weighing': currentStatus = 'Weighing'; truckStatus = 'Completing'; status = 'active'; break;
+                case 'Pumping Stopped': currentStatus = 'Completing'; truckStatus = 'Completing'; status = 'active'; break;
+                case 'Pumping Started': currentStatus = 'Pumping'; truckStatus = 'Loading'; status = 'active'; break;
+                case 'On Bay': currentStatus = 'On Bay'; truckStatus = 'On Bay'; status = 'active'; break;
+                case 'Directed to Bay': currentStatus = 'Directed to Bay'; truckStatus = 'Directed to Bay'; status = 'active'; break;
+                case 'Ready / Approved': currentStatus = 'Waiting for Bay'; truckStatus = 'Waiting'; status = 'active'; break;
+                case 'Arrived': currentStatus = 'Awaiting Approval'; truckStatus = 'Registered'; status = 'active'; break;
+            }
+            newStatuses = { currentStatus, truckStatus, status };
+            break;
+        }
+        case 'vessel': {
+            const completedCommonSof = new Set((op.sof || []).filter(s => s.status === 'complete').map(s => s.event));
+            const isPumping = op.transferPlan.some(tp => tp.transfers.some(t => (t.sof || []).some(s => s.event.includes('START PUMPING') && s.status === 'complete' && !(t.sof || []).some(s2 => s2.event.includes('STOP PUMPING') && s2.status === 'complete'))));
+
+            let currentStatus = 'Scheduled', status: OperationStatus = 'planned';
+            if (completedCommonSof.has('CREW COMPLETED / SITE SECURE')) { currentStatus = 'Departed'; status = 'completed'; }
+            else if (completedCommonSof.has('LAST HOSE DISCONNECTED')) { currentStatus = 'Completing'; status = 'active'; }
+            else if (isPumping) { currentStatus = 'Pumping'; status = 'active'; }
+            else if (completedCommonSof.has('SURVEYOR ONBOARD')) { currentStatus = 'Surveying'; status = 'active'; }
+            else if (completedCommonSof.has('VESSEL ALONGSIDE')) { currentStatus = 'Alongside'; status = 'active'; }
+            else if (completedCommonSof.has('START PREPARATIONS / CREW ONSITE')) { currentStatus = 'Preparations'; status = 'active'; }
+            
+            newStatuses = { currentStatus, status };
+            break;
+        }
+        case 'rail': {
+            const transfer = op.transferPlan?.[0]?.transfers?.[0];
+            if (!transfer?.sof) return null;
+            const railSofEvents = SOF_EVENTS_MODALITY['rail'];
+            const completedSof = new Set(transfer.sof.filter(s => s.status === 'complete').map(s => s.event.replace(/^(Rework #\d+: )/, '')));
+            
+            let latestCompletedStep: string | null = null;
+            for (let i = railSofEvents.length - 1; i >= 0; i--) {
+                if (completedSof.has(railSofEvents[i])) { latestCompletedStep = railSofEvents[i]; break; }
+            }
+
+            let currentStatus = 'Scheduled', status: OperationStatus = 'planned';
+            switch (latestCompletedStep) {
+                case 'Departed': currentStatus = 'Departed'; status = 'completed'; break;
+                case 'Paperwork Done': currentStatus = 'Completing'; status = 'active'; break;
+                case 'Hose Disconnect': currentStatus = 'Completing'; status = 'active'; break;
+                case 'Pumping Stopped': currentStatus = 'Completing'; status = 'active'; break;
+                case 'Pumping Started': currentStatus = 'Pumping'; status = 'active'; break;
+                case 'Checks OK': currentStatus = 'On Siding'; status = 'active'; break;
+                case 'On Siding': currentStatus = 'On Siding'; status = 'active'; break;
+                case 'Arrived at Terminal': currentStatus = 'Arrived'; status = 'active'; break;
+            }
+            newStatuses = { currentStatus, status };
+            break;
+        }
+    }
+
+    if (newStatuses && (newStatuses.currentStatus !== op.currentStatus || newStatuses.truckStatus !== op.truckStatus || (newStatuses.status && newStatuses.status !== op.status))) {
+        return newStatuses;
+    }
+
+    return null;
+};
+
+export const calculateAndSetCycleTime = (op: Operation): Operation => {
+    const cycleTimeData = { ...(op.cycleTimeData || {}) };
+    const allSof = (op.transferPlan || []).flatMap(tp => (tp.transfers || []).flatMap(t => t.sof || []));
+    (op.sof || []).forEach(s => allSof.push(s));
+    
+    allSof.forEach(s => {
+        if(s.status === 'complete') {
+            const eventName = s.event.replace(/^(Rework #\d+: )?(.*)$/, '$2');
+            if(!cycleTimeData[eventName]) {
+                 cycleTimeData[eventName] = s.time;
+            }
+        }
+    });
+    return { ...op, cycleTimeData };
+};
+
+export const getLatestSofTimestamp = (op: Operation): string => {
+    const allSof = [
+        ...(op.sof || []),
+        ...(op.transferPlan || []).flatMap(tp => (tp.transfers || []).flatMap(t => t.sof || []))
+    ];
+    
+    const completedSteps = allSof.filter(s => s.status === 'complete' && s.time);
+    
+    if (completedSteps.length === 0) {
+        return op.eta; // For planned items, their "last activity" is their scheduled start
+    }
+    
+    // Find the latest time among all completed steps
+    completedSteps.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+    
+    return completedSteps[0].time;
+};
+
+export const getOperationColorClass = (op: Operation): string => {
+    // Priority 1: Issues that require attention
+    if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected') {
+        return 'status-rejected'; // Red
+    }
+    // Priority 2: Completed operations
+    if (op.status === 'completed' || op.currentStatus === 'Departed') {
+        return 'status-departed'; // Grey
+    }
+    // Priority 3: Active operations (with different states)
+    if (op.status === 'active') {
+        // Check for completing states first
+        const completingStates = ['Completing', 'Awaiting Departure', 'Weighing', 'Sealing', 'Paperwork', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Pumping Stopped'];
+        if (completingStates.includes(op.currentStatus) || completingStates.includes(op.truckStatus || '')) {
+            return 'status-completing';
+        }
+
+        // Now check for active pumping/loading states
+        const loadingStates = ['On Bay', 'Loading', 'Pumping'];
+        if (loadingStates.includes(op.currentStatus) || loadingStates.includes(op.truckStatus || '')) {
+             return 'status-loading';
+        }
+
+        // NEW logic for trucks
+        if (op.modality === 'truck') {
+            if (op.truckStatus === 'Registered' || op.currentStatus === 'Awaiting Approval') {
+                return 'status-arrived'; // Dark Blue
+            }
+            if (op.truckStatus === 'Waiting' || op.truckStatus === 'Directed to Bay' || op.currentStatus === 'Waiting for Bay' || op.currentStatus === 'Directed to Bay') {
+                return 'status-approved'; // Light Green
+            }
+        }
+        
+        // Fallback for other active states (e.g. vessel alongside)
+        return 'status-arrived'; // Use dark blue as a general "active but waiting"
+    }
+    // Priority 4: Default planned state
+    if (op.status === 'planned') {
+        return 'status-planned'; // Light Blue
+    }
+    
+    // Fallback
+    return 'status-departed'; // Default to grey if status is unknown
+};
+
+export const getOperationBorderColorClass = (op: Operation): string => {
+    // Priority 1: Issues that require attention
+    if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected') {
+        return 'border-rose-700'; // Red
+    }
+    // Priority 2: Completed operations
+    if (op.status === 'completed' || op.currentStatus === 'Departed') {
+        return 'border-slate-600'; // Grey
+    }
+    // Priority 3: Active operations (with different states)
+    if (op.status === 'active') {
+        // Check for completing states first
+        const completingStates = ['Completing', 'Awaiting Departure', 'Weighing', 'Sealing', 'Paperwork', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Pumping Stopped'];
+        if (completingStates.includes(op.currentStatus) || completingStates.includes(op.truckStatus || '')) {
+            return 'border-slate-400';
+        }
+
+        // Now check for active pumping/loading states
+        const loadingStates = ['On Bay', 'Loading', 'Pumping'];
+        if (loadingStates.includes(op.currentStatus) || loadingStates.includes(op.truckStatus || '')) {
+             return 'border-green-600';
+        }
+        
+        if (op.modality === 'truck') {
+            if (op.truckStatus === 'Registered' || op.currentStatus === 'Awaiting Approval') {
+                return 'border-blue-700'; // Dark Blue
+            }
+            if (op.truckStatus === 'Waiting' || op.truckStatus === 'Directed to Bay' || op.currentStatus === 'Waiting for Bay' || op.currentStatus === 'Directed to Bay') {
+                return 'border-lime-500'; // Light Green
+            }
+        }
+        
+        // Fallback for other active states
+        return 'border-blue-700';
+    }
+    // Priority 4: Default planned state
+    if (op.status === 'planned') {
+        return 'border-blue-400'; // Light Blue for planned
+    }
+    
+    // Fallback
+    return 'border-slate-300'; // Default to grey if status is unknown
+};
+
+export const naturalSort = (a: string, b: string): number => {
+    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+};
+
+export const createDocklineToWharfMap = (terminalSettings: TerminalSettings): Record<string, string> => {
+    const mapping: Record<string, string> = {};
+    const wharfMapping = terminalSettings.wharfDocklineMapping || {};
+    Object.entries(wharfMapping).forEach(([wharf, docklines]) => {
+        (docklines || []).forEach(id => { mapping[id] = wharf; });
+    });
+    return mapping;
 };

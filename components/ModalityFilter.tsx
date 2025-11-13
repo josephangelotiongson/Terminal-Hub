@@ -21,16 +21,25 @@ const ModalityFilter: React.FC<ModalityFilterProps> = ({ filter, setFilter, show
 
     return (
         <div className="planning-board-filters">
-            {options.map(f => (
-                <button
-                    key={f}
-                    onClick={() => setFilter(f)}
-                    className={`filter-btn ${filter === f ? 'active' : ''}`}
-                >
-                    {f !== 'all' && <i className={`fas ${getIcon(f as Modality)} mr-2`}></i>}
-                    {f.charAt(0).toUpperCase() + f.slice(1)}
-                </button>
-            ))}
+            {options.map(f => {
+                const label = f.charAt(0).toUpperCase() + f.slice(1);
+                const isActive = filter === f || (filter === 'all' && showAllOption === false && f === 'vessel'); // Default to vessel if 'all' is not an option
+
+                return (
+                    <button
+                        key={f}
+                        onClick={() => setFilter(f)}
+                        className={`filter-btn ${isActive ? 'active' : ''} ${f !== 'all' ? '!px-3' : ''}`}
+                        title={label}
+                    >
+                        {f === 'all' ? (
+                            label
+                        ) : (
+                            <i className={`fas ${getIcon(f as Modality)}`}></i>
+                        )}
+                    </button>
+                );
+            })}
         </div>
     );
 };

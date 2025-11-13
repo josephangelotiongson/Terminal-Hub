@@ -1,7 +1,5 @@
-
-
 import React, { createContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
-import { Operation, AppSettings, Hold, ScadaData, UIState, View, TerminalSettings, Modality, ActivityAction, ActivityLogItem, ViewHistoryItem, RequeueDetails, User, SOFItem, DipSheetEntry, WorkOrderStatus, WorkOrderNote, CycleTimeData, Transfer, OutageStatus, TransferPlanItem, HistorianData, HistorianDataPoint, SpecialServiceData, ManpowerSchedule } from '../types';
+import { Operation, AppSettings, Hold, ScadaData, UIState, View, TerminalSettings, Modality, ActivityAction, ActivityLogItem, ViewHistoryItem, RequeueDetails, User, SOFItem, DipSheetEntry, WorkOrderStatus, WorkOrderNote, CycleTimeData, Transfer, OutageStatus, TransferPlanItem, HistorianData, HistorianDataPoint, SpecialServiceData } from '../types';
 import { dataService } from '../services/api';
 import { tankService } from '../services/tankService';
 import { historianService } from '../services/historianService';
@@ -53,8 +51,6 @@ interface AppContextType {
     switchView: (view: View, opId?: string | null, lineIndex?: number, transferIndex?: number, opToEdit?: Operation, tankId?: string) => void;
     isSidebarOpen: boolean;
     setIsSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
-    isDesktopSidebarCollapsed: boolean;
-    setIsDesktopSidebarCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
     viewHistory: ViewHistoryItem[];
     goBack: () => void;
     workspaceFilter: Modality | 'all';
@@ -71,17 +67,6 @@ interface AppContextType {
     openNewOpModal: (initialData?: Partial<Operation> | null) => void;
     closeNewOpModal: () => void;
     
-    // State for No Show delay modal
-    noShowDelayModalState: { isOpen: boolean; opId: string | null };
-    closeNoShowDelayModal: () => void;
-    handleConfirmNoShowDelay: (opId: string, reason: string, notes: string) => void;
-
-    // New state for Accept No Show modal
-    acceptNoShowModalState: { isOpen: boolean; opId: string | null };
-    openAcceptNoShowModal: (opId: string) => void;
-    closeAcceptNoShowModal: () => void;
-    handleConfirmAcceptNoShow: (opId: string, reason: string) => void;
-
     // Placement Mode for Rescheduling
     placementOpId: string | null;
     startPlacementMode: (opId: string) => void;
@@ -124,51 +109,34 @@ interface AppContextType {
     updateCompletedOperationDetails: (opId: string, opUpdates: Partial<Operation>, transferId?: string, transferUpdates?: Partial<Transfer>) => void;
     updatePreArrivalCheck: (opId: string, checkName: string, status: 'pending' | 'complete') => void;
     updateVesselServiceStatus: (opId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => void;
+    // FIX: Add properties for conflict resolution modal to the context type.
     conflictData: { isOpen: boolean; conflictingOps: Operation[]; hold: Hold | null };
     closeConflictModal: () => void;
     resolveAndRescheduleConflicts: () => void;
-    directToBayModalState: { isOpen: boolean; op: Operation | null; isRevert: boolean; bayInfraId?: string; };
+
+    // FIX: Add properties for DirectToBayModal
+    directToBayModalState: { isOpen: boolean; op: Operation | null; isRevert: boolean };
     closeDirectToBayModal: () => void;
     handleConfirmBayAction: () => void;
-    redirectBayModalState: { isOpen: boolean; op: Operation | null; occupiedByOp: Operation | null };
-    closeRedirectBayModal: () => void;
-    handleScheduleForLater: (opId: string) => void;
     
     // Simulation
     simulatedTime: Date;
     isTimePlaying: boolean;
     setIsTimePlaying: React.Dispatch<React.SetStateAction<boolean>>;
-
-    // Manpower
-    manpowerSchedule: ManpowerSchedule;
-    setManpowerSchedule: React.Dispatch<React.SetStateAction<ManpowerSchedule>>;
-    updateUserShift: (userName: string, shift: 'Day' | 'Swing' | 'Night' | 'Off') => void;
-    updateUserAssignments: (userName: string, assignments: { modalities: Modality[], areas: string[] }) => void;
 }
 
 export const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const INITIAL_USERS: User[] = [
-    { name: 'Ops Lead', role: 'Operations Lead', shift: 'Day' },
-    { name: 'Operator 1', role: 'Operator', shift: 'Day', assignedModalities: ['truck'], assignedAreas: ['Bay 1', 'Bay 2', 'Bay 3', 'Bay 4'] },
-    { name: 'Operator 2', role: 'Operator', shift: 'Day', assignedModalities: ['vessel'], assignedAreas: ['L12', 'L13'] },
-    { name: 'Operator 3', role: 'Operator', shift: 'Swing', assignedModalities: ['rail'], assignedAreas: ['Siding A', 'Siding B'] },
-    { name: 'Operator 4', role: 'Operator', shift: 'Swing', assignedModalities: ['truck'], assignedAreas: [] },
-    { name: 'Operator 5', role: 'Operator', shift: 'Night', assignedModalities: ['vessel', 'truck'], assignedAreas: [] },
-    { name: 'Dispatch', role: 'Dispatch', shift: 'Day' },
-    { name: 'Terminal Planner', role: 'Terminal Planner', shift: 'Day' },
-    { name: 'Maintenance Planner', role: 'Maintenance Planner', shift: 'Day' },
-    { name: 'Maintenance Tech', role: 'Maintenance Tech', shift: 'Day' },
-    { name: 'Commercials', role: 'Commercials', shift: 'Day' },
+    { name: 'Ops Lead', role: 'Operations Lead' },
+    { name: 'Operator 1', role: 'Operator' },
+    { name: 'Operator 2', role: 'Operator' },
+    { name: 'Dispatch', role: 'Dispatch' },
+    { name: 'Terminal Planner', role: 'Terminal Planner' },
+    { name: 'Maintenance Planner', role: 'Maintenance Planner' },
+    { name: 'Maintenance Tech', role: 'Maintenance Tech' },
+    { name: 'Commercials', role: 'Commercials' },
 ];
-
-const INITIAL_SCHEDULE: ManpowerSchedule = {
-  'Operator 1': { 0: ['Bay 1'], 1: ['Bay 1'], 2: ['Bay 1'], 3: ['Bay 2'], 4: ['Bay 2'], 5: ['Bay 2'], 6: [], 7: [] },
-  'Operator 2': { 0: ['L12'], 1: ['L12'], 2: ['L12'], 3: ['L12'], 4: ['L13'], 5: ['L13'], 6: ['L13'], 7: ['L13'] },
-  'Operator 3': { 8: ['Siding A'], 9: ['Siding A'], 10: ['Siding B'], 11: ['Siding B'], 12: ['Siding B'], 13: ['Siding B'], 14: ['Siding B'], 15: ['Siding B'], 16: ['Siding B'] }, // Over 8 hours
-  'Operator 4': { 8: ['Bay 5'], 9: ['Bay 5'], 10: ['Bay 6'], 11: ['Bay 6']},
-  'Operator 5': {},
-};
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [operations, setOperations] = useState<Operation[]>([]);
@@ -187,31 +155,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const [activeTransferIndex, setActiveTransferIndex] = useState<number | null>(null);
     const [activeTankId, setActiveTankId] = useState<string | null>(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-    const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
     const [users, setUsers] = useState<User[]>(INITIAL_USERS);
     const [currentUser, setCurrentUser] = useState<User>(INITIAL_USERS[0]);
     const [viewHistory, setViewHistory] = useState<ViewHistoryItem[]>([]);
     const [workspaceFilter, setWorkspaceFilter] = useState<Modality | 'all'>('all');
     const [workspaceSearchTerm, setWorkspaceSearchTerm] = useState('');
     const [visibleInfrastructure, setVisibleInfrastructure] = useState<string[]>([]);
-    const [userAllowedInfra, setUserAllowedInfra] = useState<string[]>([]);
     const [rescheduleModalData, setRescheduleModalData] = useState<{ opId: string | null; viewDate: Date; source?: 'dashboard-delay', priority?: 'high' | 'normal' }>({ opId: null, viewDate: MOCK_CURRENT_TIME });
     const [editingOp, setEditingOp] = useState<Operation | null>(null);
     const [isNewOpModalOpen, setIsNewOpModalOpen] = useState(false);
     const [newOpInitialData, setNewOpInitialData] = useState<Partial<Operation> | null>(null);
+    // FIX: Add state for conflict resolution modal data.
     const [conflictData, setConflictData] = useState<{ isOpen: boolean; conflictingOps: Operation[]; hold: Hold | null }>({ isOpen: false, conflictingOps: [], hold: null });
+    
     const [placementOpId, setPlacementOpId] = useState<string | null>(null);
-    const [noShowDelayModalState, setNoShowDelayModalState] = useState<{ isOpen: boolean; opId: string | null }>({ isOpen: false, opId: null });
-    const [acceptNoShowModalState, setAcceptNoShowModalState] = useState<{ isOpen: boolean; opId: string | null }>({ isOpen: false, opId: null });
+
+    // FIX: Add state for DirectToBayModal.
     const [directToBayModalState, setDirectToBayModalState] = useState<{
         isOpen: boolean;
         op: Operation | null;
         isRevert: boolean;
         bayInfraId?: string;
     }>({ isOpen: false, op: null, isRevert: false });
-    const [redirectBayModalState, setRedirectBayModalState] = useState<{ isOpen: boolean; op: Operation | null; occupiedByOp: Operation | null; }>({ isOpen: false, op: null, occupiedByOp: null });
-    const [manpowerSchedule, setManpowerSchedule] = useState<ManpowerSchedule>(INITIAL_SCHEDULE);
-
 
     // Simulation State
     const [simulatedTime, setSimulatedTime] = useState<Date>(MOCK_CURRENT_TIME);
@@ -281,6 +246,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
     }, [tanks, selectedTerminal]);
 
+    // FIX: This effect ensures that if the current user's role is changed via delegation/revocation,
+    // their permissions are updated instantly without requiring a manual user re-selection.
     useEffect(() => {
         if (currentUser) {
             const freshUserData = users.find(u => u.name === currentUser.name);
@@ -494,7 +461,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                     if (isOverdue) {
                         if (op.modality === 'truck' && etaTime < (now.getTime() - 30 * 60 * 1000)) {
                             opsToUpdate.push({ id: op.id, type: 'no-show' });
-                        } else if (op.modality !== 'truck') { // Only flag non-trucks as generically overdue
+                        } else {
                             opsToUpdate.push({ id: op.id, type: 'overdue' });
                         }
                     }
@@ -531,62 +498,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return () => clearInterval(intervalId);
     }, []); // Empty dependency array, runs once on mount.
 
-    // EFFECT 1: Determine user's total scope and set initial UI filter on login/user change.
+    // Effect to update visible infrastructure
     useEffect(() => {
         const infraMap = currentTerminalSettings.infrastructureModalityMapping || {};
-        const allTerminalInfra = Object.keys(infraMap);
-
-        // For leads, allow everything and reset filters.
-        if (currentUser && (currentUser.role === 'Operations Lead' || currentUser.delegatedBy)) {
-            setUserAllowedInfra(allTerminalInfra);
-            setWorkspaceFilter('all');
-            return;
-        }
-        
-        // For other users (operators, etc.), determine their scope from assignments.
-        if (currentUser) {
-            const { assignedModalities, assignedAreas } = currentUser;
-
-            let allowedInfra: string[] = [];
-            // If specific areas are assigned, that's their entire scope.
-            if (assignedAreas && assignedAreas.length > 0) {
-                allowedInfra = assignedAreas;
-            } 
-            // If not, but modalities are assigned, their scope is all infra for those modalities.
-            else if (assignedModalities && assignedModalities.length > 0) {
-                allowedInfra = allTerminalInfra.filter(infraId => 
-                    assignedModalities.includes(infraMap[infraId])
-                );
-            } 
-            // If no assignments, default to showing everything to avoid a blank screen.
-            else {
-                allowedInfra = allTerminalInfra;
-            }
-            setUserAllowedInfra(allowedInfra);
-
-            // Set a sensible initial UI filter based on assigned modalities.
-            if (assignedModalities && assignedModalities.length === 1) {
-                setWorkspaceFilter(assignedModalities[0]);
-            } else {
-                setWorkspaceFilter('all'); // Handles 0 or >1 modalities.
-            }
-        }
-    }, [currentUser, settings, selectedTerminal]);
-
-
-    // EFFECT 2: Determine what's actually visible on screen based on the user's scope AND their selected UI filter.
-    useEffect(() => {
-        const infraMap = currentTerminalSettings.infrastructureModalityMapping || {};
-
-        // Filter the user's total allowed infrastructure by the currently selected UI filter.
-        const finalVisible = userAllowedInfra.filter(infraId => {
-            if (workspaceFilter === 'all') return true;
-            return infraMap[infraId] === workspaceFilter;
-        });
-        
-        // Sort the final list for a consistent display order.
         const wharfMap = createDocklineToWharfMap(currentTerminalSettings);
-        finalVisible.sort((a, b) => {
+        
+        const allInfra = Object.keys(infraMap).sort((a, b) => {
             const wharfA = wharfMap[a] || 'zzz';
             const wharfB = wharfMap[b] || 'zzz';
             if (wharfA < wharfB) return -1;
@@ -594,8 +511,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             return naturalSort(a, b);
         });
 
-        setVisibleInfrastructure(finalVisible);
-    }, [userAllowedInfra, workspaceFilter, settings, selectedTerminal]);
+        const modalityFiltered = workspaceFilter === 'all'
+            ? allInfra
+            : allInfra.filter(infra => currentTerminalSettings.infrastructureModalityMapping[infra] === workspaceFilter);
+        
+        setVisibleInfrastructure(modalityFiltered);
+    }, [selectedTerminal, workspaceFilter, settings]);
 
 
     const setSelectedTerminal = (terminal: string) => {
@@ -617,34 +538,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
         
         const EDITING_VIEWS: View[] = ['operation-details', 'operation-plan', 'product-transfer-details', 'dip-sheet'];
-        const isNavigatingToEditingView = EDITING_VIEWS.includes(view);
-        const isCurrentlyEditing = editingOp !== null;
-    
-        // If we are leaving an editing context, save any pending changes.
-        // This happens if we are currently editing AND (we are navigating to a non-editing view OR we are navigating to a different operation).
-        if (isCurrentlyEditing && (!isNavigatingToEditingView || editingOp.id !== opId)) {
-            if (debounceTimerRef.current) {
-                clearTimeout(debounceTimerRef.current);
-                debounceTimerRef.current = null;
-            }
-            // Save immediately before changing context
-            saveCurrentPlan(editingOp);
-        }
-        
-        // Now handle the state for the new view
-        if (isNavigatingToEditingView && opId) {
-            // Only load if we are not already editing the correct operation
-            if (editingOp?.id !== opId) {
-                const opToLoad = opToEdit || operations.find(o => o.id === opId);
-                if (opToLoad) {
-                    setEditingOp(JSON.parse(JSON.stringify(opToLoad)));
+        const isEditingView = EDITING_VIEWS.includes(view);
+        if (isEditingView && opId && editingOp?.id !== opId) {
+            if (opToEdit) { // Passed in object takes precedence to avoid race conditions
+                setEditingOp(JSON.parse(JSON.stringify(opToEdit)));
+            } else {
+                const opFromList = operations.find(o => o.id === opId);
+                if (opFromList) {
+                    setEditingOp(JSON.parse(JSON.stringify(opFromList)));
                 } else {
-                    setEditingOp(null); // Op not found
+                    setEditingOp(null);
                 }
             }
-        } else if (!isNavigatingToEditingView) {
-            // Clear editing state if moving to a non-editing view
-            setEditingOp(null);
+        } else if (!isEditingView && editingOp) {
+            setEditingOp(null); // Clear editing state when leaving editing views
         }
         
         setCurrentView(view);
@@ -655,41 +562,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const goBack = () => {
-        // 1. Save current work if any
-        const isCurrentlyEditing = editingOp !== null;
-        if (isCurrentlyEditing) {
-            if (debounceTimerRef.current) {
-                clearTimeout(debounceTimerRef.current);
-                debounceTimerRef.current = null;
-            }
-            saveCurrentPlan(editingOp);
-        }
-    
-        // 2. Pop the history stack
-        const lastViewItem = viewHistory.pop();
-        if (lastViewItem) {
-            setViewHistory([...viewHistory]); // Update state after pop
-    
-            // 3. Set the state for the previous view
-            const EDITING_VIEWS: View[] = ['operation-details', 'operation-plan', 'product-transfer-details', 'dip-sheet'];
-            const isGoingToEditingView = EDITING_VIEWS.includes(lastViewItem.view);
-    
-            if (isGoingToEditingView && lastViewItem.opId) {
-                const opToLoad = operations.find(o => o.id === lastViewItem.opId);
-                if (opToLoad) {
-                    setEditingOp(JSON.parse(JSON.stringify(opToLoad)));
-                } else {
-                    setEditingOp(null);
-                }
-            } else {
-                setEditingOp(null);
-            }
-    
-            setCurrentView(lastViewItem.view);
-            setActiveOpId(lastViewItem.opId);
-            setActiveLineIndex(lastViewItem.lineIndex);
-            setActiveTransferIndex(lastViewItem.transferIndex);
-            setActiveTankId(lastViewItem.tankId || null);
+        const lastView = viewHistory.pop();
+        if (lastView) {
+            setViewHistory([...viewHistory]);
+            setCurrentView(lastView.view);
+            setActiveOpId(lastView.opId);
+            setActiveLineIndex(lastView.lineIndex);
+            setActiveTransferIndex(lastView.transferIndex);
+            setActiveTankId(lastView.tankId || null);
         }
     };
     
@@ -762,64 +642,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setPlacementOpId(null);
     };
 
-    const openAcceptNoShowModal = (opId: string) => {
-        setAcceptNoShowModalState({ isOpen: true, opId });
-    };
-
-    const closeAcceptNoShowModal = () => {
-        setAcceptNoShowModalState({ isOpen: false, opId: null });
-    };
-
-    const handleConfirmAcceptNoShow = (opId: string, reason: string) => {
-        setOperations(prevOps => {
-            const newOps = [...prevOps];
-            const opIndex = newOps.findIndex(op => 
-                op.id === opId && 
-                op.modality === 'truck' && 
-                (['Reschedule Required', 'No Show'].includes(op.currentStatus))
-            );
-            if (opIndex > -1) {
-                const opToValidate = newOps[opIndex];
-    
-                const activeHolds = holds.filter(h => h.status === 'approved' && h.workOrderStatus !== 'Closed');
-                const validation = validateOperationPlan(opToValidate, currentTerminalSettings, settings, activeHolds);
-                if (!validation.isValid) {
-                    alert(`Cannot activate truck. Plan has issues:\n- ${validation.issues.join('\n- ')}`);
-                    return prevOps;
-                }
-                
-                const time = simulatedTimeRef.current.toISOString();
-                const logDetails = `Overdue truck accepted and has arrived. Status changed from '${opToValidate.currentStatus}' to 'Awaiting Gate Approval'. Reason: ${reason}`;
-                const newLog: ActivityLogItem = { time, user: currentUser.name, action: 'STATUS_UPDATE', details: logDetails };
-                
-                const updatedOp = JSON.parse(JSON.stringify(opToValidate)) as Operation;
-                const transfer = updatedOp.transferPlan?.[0]?.transfers?.[0];
-                if (transfer?.sof) {
-                    const stepsToComplete = ['Arrived'];
-                    stepsToComplete.forEach(stepName => {
-                        const latestLoopNum = Math.max(1, ...transfer.sof!.map(s => s.loop));
-                        const stepIndex = transfer.sof!.findIndex(s => s.event.includes(stepName) && s.status === 'pending' && s.loop === latestLoopNum);
-                        if (stepIndex > -1) {
-                            transfer.sof![stepIndex] = { ...transfer.sof![stepIndex], status: 'complete', time, user: currentUser.name };
-                        }
-                    });
-                }
-    
-                updatedOp.status = 'active';
-                const newStatuses = deriveStatusFromSof(updatedOp);
-    
-                newOps[opIndex] = {
-                    ...updatedOp, ...newStatuses,
-                    activityHistory: [...updatedOp.activityHistory, newLog],
-                    requeueDetails: undefined,
-                    delay: { active: false },
-                };
-            }
-            return newOps;
-        });
-        closeAcceptNoShowModal();
-    };
-
+    // FIX: Add handlers for DirectToBayModal
     const closeDirectToBayModal = () => {
         setDirectToBayModalState({ isOpen: false, op: null, isRevert: false, bayInfraId: undefined });
     };
@@ -914,53 +737,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 return newOps;
             });
         }
-    };
-
-    const closeRedirectBayModal = () => {
-        setRedirectBayModalState({ isOpen: false, op: null, occupiedByOp: null });
-    };
-
-    const handleScheduleForLater = (opId: string) => {
-        const op = getOperationById(opId);
-        if (!op) return;
-    
-        setOperations(prevOps => prevOps.map(o => {
-            if (o.id === opId) {
-                const time = simulatedTimeRef.current.toISOString();
-                const newLog: ActivityLogItem = { time, user: currentUser.name, action: 'REQUEUE', details: `Bay occupied. Manually flagged for reschedule.` };
-                const requeueDetails: RequeueDetails = { reason: 'Bay Occupied - Reschedule', user: currentUser.name, time, details: {}, priority: 'normal' };
-                
-                // Revert SOF state to 'Ready / Approved'
-                const updatedOp = JSON.parse(JSON.stringify(o));
-                const transfer = updatedOp.transferPlan?.[0]?.transfers?.[0];
-                if (transfer?.sof) {
-                    const readyStepIndex = transfer.sof.findIndex((s: SOFItem) => s.event.includes('Ready / Approved'));
-                    if (readyStepIndex > -1) {
-                        transfer.sof.forEach((step: SOFItem, index: number) => {
-                            if (index > readyStepIndex) {
-                                step.status = 'pending';
-                                step.time = '';
-                                step.user = '';
-                            }
-                        });
-                    }
-                }
-                const newStatuses = deriveStatusFromSof(updatedOp, true);
-    
-                return { 
-                    ...updatedOp,
-                    ...newStatuses,
-                    currentStatus: 'Reschedule Required',
-                    requeueDetails,
-                    activityHistory: [...o.activityHistory, newLog]
-                };
-            }
-            return o;
-        }));
-        
-        closeRedirectBayModal();
-        switchView('planning'); // Switch to the planning board
-        startPlacementMode(opId); // Then activate placement mode
     };
 
     const delegateRole = (targetUserName: string) => {
@@ -1241,12 +1017,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             newOp = {
                 ...newOp,
                 transferPlan: [{
-                    infrastructureId: details.transferPlan?.[0]?.infrastructureId || '',
+                    infrastructureId: '', // To be assigned in the main planning screen
                     transfers: [{
                         id: `transfer-${Date.now()}`,
                         customer: transfer.customer || '',
                         product: transfer.product || '',
-                        from: transfer.from || '',
+                        from: '',
                         to: (details.modality === 'truck' && transfer.direction === 'Tank to Truck') ? details.transportId : '',
                         tonnes: transfer.tonnes || 0,
                         direction: transfer.direction || '',
@@ -1426,49 +1202,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     
         switchView('planning'); // Navigate back to the planning board
     };
-    
+
     const acceptTruckArrival = (opId: string) => {
         setOperations(prevOps => {
             const newOps = [...prevOps];
             const opIndex = newOps.findIndex(op => 
                 op.id === opId && 
                 op.modality === 'truck' && 
-                (op.truckStatus === 'Registered' || op.currentStatus === 'Awaiting Approval')
+                (op.truckStatus === 'Registered' || ['Reschedule Required', 'No Show'].includes(op.currentStatus))
             );
             if (opIndex > -1) {
                 const opToValidate = newOps[opIndex];
 
+                // --- SAFETY CHECK ---
                 const activeHolds = holds.filter(h => h.status === 'approved' && h.workOrderStatus !== 'Closed');
                 const validation = validateOperationPlan(opToValidate, currentTerminalSettings, settings, activeHolds);
                 if (!validation.isValid) {
                     alert(`Cannot activate truck. Plan has issues:\n- ${validation.issues.join('\n- ')}`);
-                    return prevOps;
+                    return prevOps; // Abort state change
                 }
+                // --- END OF CHECK ---
                 const time = simulatedTimeRef.current.toISOString();
                 
-                const logDetails = 'Truck arrival approved. Operation is now waiting for bay assignment.';
+                const logDetails = opToValidate.truckStatus === 'Registered' 
+                    ? 'Truck arrival accepted. Operation is now active and waiting for bay.'
+                    : `Overdue truck accepted. Status changed from '${opToValidate.currentStatus}' to active.`;
 
                 const newLog: ActivityLogItem = { time, user: currentUser.name, action: 'STATUS_UPDATE', details: logDetails };
                 
                 const updatedOp = JSON.parse(JSON.stringify(opToValidate)) as Operation;
                 const transfer = updatedOp.transferPlan?.[0]?.transfers?.[0];
                 if (transfer?.sof) {
-                    const stepsToComplete = ['Ready / Approved'];
+                    const stepsToComplete = ['Arrived', 'Ready / Approved'];
                     stepsToComplete.forEach(stepName => {
                         const latestLoopNum = Math.max(1, ...transfer.sof!.map(s => s.loop));
                         const stepIndex = transfer.sof!.findIndex(s => s.event.includes(stepName) && s.status === 'pending' && s.loop === latestLoopNum);
                         if (stepIndex > -1) {
-                            transfer.sof![stepIndex] = { ...transfer.sof![stepIndex], status: 'complete', time, user: currentUser.name };
+                            transfer.sof![stepIndex] = {
+                                ...transfer.sof![stepIndex],
+                                status: 'complete',
+                                time,
+                                user: currentUser.name,
+                            };
                         }
                     });
                 }
 
                 updatedOp.status = 'active';
                 
+                // Immediately derive new status from SOF change
                 const newStatuses = deriveStatusFromSof(updatedOp);
 
                 newOps[opIndex] = {
-                    ...updatedOp, ...newStatuses,
+                    ...updatedOp,
+                    ...newStatuses, // Apply derived statuses
                     activityHistory: [...updatedOp.activityHistory, newLog],
                     requeueDetails: undefined,
                     delay: { active: false },
@@ -1478,6 +1265,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
     };
     
+    // FIX: Modified to open modal instead of directly updating state.
     const callOffTruck = (opId: string) => {
         const op = getOperationById(opId);
         if (op) {
@@ -1486,34 +1274,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     
     const directTruckToBay = (opId: string, bayInfraId: string) => {
-        const opToDirect = getOperationById(opId);
-        if (!opToDirect) return;
-    
-        const OCCUPYING_STATUSES = ['Directed to Bay', 'On Bay', 'Loading', 'Pumping', 'Completing'];
-    
-        const occupyingOp = operations.find(op =>
-            op.id !== opId &&
-            op.modality === 'truck' &&
-            op.status === 'active' &&
-            op.transferPlan[0]?.infrastructureId === bayInfraId &&
-            OCCUPYING_STATUSES.includes(op.truckStatus || '')
-        );
-    
-        if (occupyingOp) {
-            setRedirectBayModalState({
-                isOpen: true,
-                op: opToDirect,
-                occupiedByOp: occupyingOp,
-            });
-            return;
+        const op = getOperationById(opId);
+        if (op) {
+            // The operation object in state doesn't have the bay assigned yet.
+            // But the modal needs to know it to display the message.
+            // So, create a temporary copy with the bay assigned.
+            const opWithBayAssigned = JSON.parse(JSON.stringify(op));
+            opWithBayAssigned.transferPlan[0].infrastructureId = bayInfraId;
+
+            setDirectToBayModalState({ isOpen: true, op: opWithBayAssigned, isRevert: false, bayInfraId: bayInfraId });
         }
-    
-        const opWithBayAssigned = JSON.parse(JSON.stringify(opToDirect));
-        opWithBayAssigned.transferPlan[0].infrastructureId = bayInfraId;
-    
-        setDirectToBayModalState({ isOpen: true, op: opWithBayAssigned, isRevert: false, bayInfraId: bayInfraId });
     };
 
+    // FIX: Modified to open modal instead of directly updating state.
     const revertCallOff = (opId: string) => {
         const op = getOperationById(opId);
         if (op) {
@@ -1575,6 +1348,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
     };
     
+    // FIX: Implement functions for conflict resolution modal.
     const closeConflictModal = () => {
         setConflictData({ isOpen: false, conflictingOps: [], hold: null });
     };
@@ -1666,6 +1440,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 const resourceMatch = tp.infrastructureId === savedHold.resource;
                 if (!resourceMatch) return false;
 
+                // FIX: Changed incorrect variable `line` to `tp`.
                 return (tp.transfers || []).some(t => t.from === savedHold.tank || t.to === savedHold.tank);
             });
 
@@ -1693,6 +1468,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                     note: `Work order cancelled. Reason: ${reason}`
                 } : undefined;
 
+// FIX: Explicitly type the updated hold object to prevent TypeScript from widening
+// the 'status' property to a generic 'string', ensuring it matches the 'OutageStatus' type.
                 const updatedHold: Hold = {
                     ...h,
                     status: 'cancelled',
@@ -1785,15 +1562,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             return op;
         }));
     };
-    const closeNoShowDelayModal = () => {
-        setNoShowDelayModalState({ isOpen: false, opId: null });
-    };
-
-    const handleConfirmNoShowDelay = (opId: string, reason: string, notes: string) => {
-        logDelay(opId, reason, notes);
-        closeNoShowDelayModal();
-    };
-
 
     const handleCompleteOperation = (opId: string) => {
         let completedOp: Operation | undefined;
@@ -1956,18 +1724,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
     };
 
-    const updateUserShift = (userName: string, shift: 'Day' | 'Swing' | 'Night' | 'Off') => {
-        setUsers(prevUsers => prevUsers.map(user => 
-            user.name === userName ? { ...user, shift } : user
-        ));
-    };
-    
-    const updateUserAssignments = (userName: string, assignments: { modalities: Modality[], areas: string[] }) => {
-        setUsers(prevUsers => prevUsers.map(user =>
-            user.name === userName ? { ...user, assignedModalities: assignments.modalities, assignedAreas: assignments.areas } : user
-        ));
-    };
-
     const contextValue: AppContextType = {
         operations, setOperations,
         settings, setSettings,
@@ -1988,7 +1744,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         activeTankId,
         switchView,
         isSidebarOpen, setIsSidebarOpen,
-        isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed,
         viewHistory,
         goBack,
         workspaceFilter, setWorkspaceFilter,
@@ -1996,8 +1751,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         visibleInfrastructure, setVisibleInfrastructure,
         rescheduleModalData, openRescheduleModal, closeRescheduleModal,
         isNewOpModalOpen, newOpInitialData, openNewOpModal, closeNewOpModal,
-        noShowDelayModalState, closeNoShowDelayModal, handleConfirmNoShowDelay,
-        acceptNoShowModalState, openAcceptNoShowModal, closeAcceptNoShowModal, handleConfirmAcceptNoShow,
         placementOpId, startPlacementMode, cancelPlacementMode, confirmPlacement,
         editingOp, setEditingOp,
         currentUser, users, setUsers, setCurrentUser,
@@ -2027,22 +1780,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateCompletedOperationDetails,
         updatePreArrivalCheck,
         updateVesselServiceStatus,
+        // FIX: Provide the new conflict resolution state and functions in the context value.
         conflictData,
         closeConflictModal,
         resolveAndRescheduleConflicts,
-        directToBayModalState,
+        // FIX: Provide new properties for DirectToBayModal
+        directToBayModalState: directToBayModalState as any, // Cast to avoid changing type everywhere
         closeDirectToBayModal,
         handleConfirmBayAction,
-        redirectBayModalState,
-        closeRedirectBayModal,
-        handleScheduleForLater,
         simulatedTime,
         isTimePlaying,
         setIsTimePlaying,
-        manpowerSchedule,
-        setManpowerSchedule,
-        updateUserShift,
-        updateUserAssignments,
     };
     
     return <AppContext.Provider value={contextValue}>{children}</AppContext.Provider>;

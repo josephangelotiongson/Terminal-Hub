@@ -8,6 +8,7 @@ interface TruckRejectionModalProps {
     isOpen: boolean;
     onClose: () => void;
     operation: Operation | null;
+    priority: 'high' | 'normal';
 }
 
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -19,7 +20,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     });
 };
 
-const TruckRejectionModal: React.FC<TruckRejectionModalProps> = ({ isOpen, onClose, operation }) => {
+const TruckRejectionModal: React.FC<TruckRejectionModalProps> = ({ isOpen, onClose, operation, priority }) => {
     const context = useContext(AppContext);
     const [reason, setReason] = useState(TRUCK_REJECTION_REASONS[0]);
     const [notes, setNotes] = useState('');
@@ -106,7 +107,7 @@ const TruckRejectionModal: React.FC<TruckRejectionModalProps> = ({ isOpen, onClo
     const handleSave = () => {
         if (!operation || !context) return;
         const finalReason = reason;
-        context.requeueTruckOperation(operation.id, finalReason, { notes, photo: photo || undefined });
+        context.requeueTruckOperation(operation.id, finalReason, { notes, photo: photo || undefined }, priority);
         onClose();
     };
 
@@ -116,11 +117,11 @@ const TruckRejectionModal: React.FC<TruckRejectionModalProps> = ({ isOpen, onClo
         <Modal
             isOpen={isOpen}
             onClose={onClose}
-            title={`Reject & Re-queue: ${operation.transportId}`}
+            title={`Reschedule Reason: ${operation.transportId}`}
             footer={
                 <>
                     <button onClick={onClose} className="btn-secondary">Cancel</button>
-                    <button onClick={handleSave} className="btn-primary">Confirm Rejection</button>
+                    <button onClick={handleSave} className="btn-primary">Confirm Reschedule</button>
                 </>
             }
         >

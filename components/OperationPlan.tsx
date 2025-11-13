@@ -1,12 +1,23 @@
+
 import React, { useContext, useState, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
-import { Operation, Transfer, TransferPlanItem, Modality, SpecialServiceData, Hold } from '../types';
+import { Operation, Transfer, TransferPlanItem, Modality, SpecialServiceData, Hold, ActivityLogItem, SOFItem } from '../types';
 import TankLevelIndicator from './TankLevelIndicator';
 import DateTimePicker from './DateTimePicker'; // Import the new component
-import SpecialServices from './SpecialServices';
-import { SOF_EVENTS_MODALITY } from '../constants';
 import CancelModal from './CancelModal';
-import { formatInfraName, validateOperationPlan } from '../utils/helpers';
+import { formatInfraName, validateOperationPlan, getOperationDurationHours, canReschedule } from '../utils/helpers';
+import RequeuePriorityModal from './RequeuePriorityModal';
+import DocumentManager from './DocumentManager';
+import { LINE_CLEANING_EVENTS } from '../constants';
+
+const getIcon = (modality: Modality): string => {
+    switch (modality) {
+        case 'vessel': return 'fa-ship';
+        case 'truck': return 'fa-truck';
+        case 'rail': return 'fa-train';
+        default: return 'fa-question-circle';
+    }
+};
 
 const MODALITY_DIRECTIONS: Record<Modality, string[]> = {
     vessel: ['Vessel to Tank', 'Tank to Vessel', 'Tank to Tank'],
@@ -18,12 +29,41 @@ const OperationPlan: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return <div>Loading context...</div>;
 
-    const { activeOpId, saveCurrentPlan, goBack, switchView, settings, currentTerminalSettings, addActivityLog, cancelOperation, editingOp: plan, setEditingOp: setPlan, holds, requeueOperation, openRescheduleModal } = context;
+    const { activeOpId, saveCurrentPlan, goBack, switchView, settings, currentTerminalSettings, addActivityLog, cancelOperation, editingOp: plan, setEditingOp: setPlan, holds, requeueOperation, openRescheduleModal, currentUser } = context;
 
-    const [isServicesModalOpen, setIsServicesModalOpen] = useState(false);
-    const [editingTransfer, setEditingTransfer] = useState<{lineIndex: number, transferIndex: number} | null>(null);
     const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'transfers' | 'requirements' | 'services'>('transfers');
+    const [activeTab, setActiveTab] = useState<'transfers' | 'requirements' | 'services' | 'documents'>('transfers');
+    const [priorityModalOpen, setPriorityModalOpen] = useState(false);
+    const canUserReschedule = canReschedule(currentUser, plan);
+
+    const checkCompatibility = React.useCallback(
+        (infraId: string, currentProduct: string, lineTransfers: Transfer[], transferIndex: number): { compatible: boolean; message: string; } => {
+            if (!currentProduct) return { compatible: true, message: '' };
+
+            let prevProduct: string | undefined;
+
+            if (transferIndex === 0) {
+                prevProduct = currentTerminalSettings.docklines?.[infraId]?.lastProduct;
+            } else {
+                prevProduct = lineTransfers[transferIndex - 1]?.product;
+            }
+
+            if (!prevProduct) return { compatible: true, message: '' };
+            
+            const prevGroup = settings.productGroups[prevProduct];
+            const currentGroup = settings.productGroups[currentProduct];
+
+            if (prevGroup && currentGroup && settings.compatibility[prevGroup]?.[currentGroup] === 'X') {
+                return {
+                    compatible: false,
+                    message: `Incompatible with previous product (${prevProduct}).`
+                };
+            }
+
+            return { compatible: true, message: '' };
+        },
+        [currentTerminalSettings.docklines, settings.productGroups, settings.compatibility]
+    );
 
     const validation = useMemo(() => {
         if (!plan) return { isValid: false, issues: ['No plan loaded.'] };
@@ -36,7 +76,6 @@ const OperationPlan: React.FC = () => {
         
         const newPlan = { ...plan, [field]: value };
         
-        // Sync top-level transportId with transfer 'to' fields for trucks, if they match the old ID
         if (field === 'transportId' && newPlan.modality === 'truck') {
             newPlan.transferPlan = newPlan.transferPlan.map(tp => ({
                 ...tp,
@@ -50,6 +89,22 @@ const OperationPlan: React.FC = () => {
         }
 
         setPlan(newPlan);
+    };
+
+    const handleDocumentUpdate = (updatedOperation: Operation, auditDetails: { action: string; details: string; }) => {
+        if (plan) {
+            const newLog: ActivityLogItem = {
+                time: new Date().toISOString(),
+                user: currentUser.name,
+                action: auditDetails.action,
+                details: auditDetails.details,
+            };
+            const finalOp = {
+                ...updatedOperation,
+                activityHistory: [...(updatedOperation.activityHistory || []), newLog]
+            };
+            setPlan(finalOp);
+        }
     };
 
     const handleAddInfrastructure = () => {
@@ -77,7 +132,6 @@ const OperationPlan: React.FC = () => {
             const line = newTransferPlan[lineIndex];
             line.infrastructureId = value;
         
-            // Reset transfers since tank options will change
             line.transfers.forEach((t: Transfer) => {
                 t.from = '';
                 t.to = t.direction.endsWith(' to Tank') ? '' : prevPlan.transportId;
@@ -144,6 +198,24 @@ const OperationPlan: React.FC = () => {
         });
     };
 
+    const handleAddCleaning = (lineIndex: number, transferIndex: number) => {
+        setPlan(prevPlan => {
+            if (!prevPlan) return null;
+            const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
+            const transfer = newPlan.transferPlan[lineIndex]?.transfers[transferIndex];
+            if (transfer) {
+                transfer.preTransferCleaningSof = LINE_CLEANING_EVENTS.map(event => ({
+                    event,
+                    status: 'pending',
+                    time: '',
+                    user: '',
+                    loop: 1
+                }));
+            }
+            return newPlan;
+        });
+    };
+
     const handleSave = () => {
         if (plan) {
             saveCurrentPlan(plan);
@@ -151,20 +223,9 @@ const OperationPlan: React.FC = () => {
         }
     };
     
-    const handleActivate = () => {
-        if (!plan || !validation.isValid || plan.status === 'active' || plan.modality === 'truck') return;
-
-        const activatedPlan: Operation = JSON.parse(JSON.stringify(plan));
-        activatedPlan.status = 'active';
-        
-        saveCurrentPlan(activatedPlan);
-        addActivityLog(plan.id, 'UPDATE', 'Operation has been activated.');
-        switchView('active-operations-list');
-    };
-    
-    const handleReschedule = () => {
+    const handleReschedule = (priority: 'high' | 'normal') => {
         if (!plan || validation.isValid) return;
-        requeueOperation(plan.id, validation.issues[0]);
+        requeueOperation(plan.id, validation.issues[0], priority);
         openRescheduleModal(plan.id, new Date());
     };
 
@@ -175,49 +236,65 @@ const OperationPlan: React.FC = () => {
         setIsCancelModalOpen(false);
     };
 
-    const openServicesModal = (lineIndex: number, transferIndex: number) => {
-        setEditingTransfer({ lineIndex, transferIndex });
-        setIsServicesModalOpen(true);
-    };
-    
-    const closeServicesModal = () => {
-        setIsServicesModalOpen(false);
-        setEditingTransfer(null);
-    };
+    const availableVesselTransferServices = useMemo(() => {
+        const modServices = settings.modalityServices?.vessel || [];
+        const prodServices = settings.productServices || [];
+        return [...new Set([...modServices, ...prodServices])].sort();
+    }, [settings]);
 
-    const handleServicesUpdate = (updatedServices: SpecialServiceData[]) => {
-        if (!plan || !editingTransfer) return;
-        const { lineIndex, transferIndex } = editingTransfer;
+    const handleVesselTransferServiceChange = (lineIndex: number, transferIndex: number, serviceName: string, isChecked: boolean) => {
+        if (!plan) return;
 
         setPlan(prevPlan => {
             if (!prevPlan) return null;
             const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
-            newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices = updatedServices;
+            const transfer = newPlan.transferPlan[lineIndex]?.transfers[transferIndex];
+            if (!transfer) return newPlan;
+
+            const currentServices = transfer.specialServices || [];
+
+            if (isChecked) {
+                if (!currentServices.some(s => s.name === serviceName)) {
+                    transfer.specialServices = [...currentServices, { name: serviceName, data: {} }];
+                }
+            } else {
+                transfer.specialServices = currentServices.filter(s => s.name !== serviceName);
+            }
+            
             return newPlan;
         });
     };
-
+    
     const handleRequirementChange = (requirementName: string, isChecked: boolean) => {
         if (!plan) return;
     
         setPlan(prevPlan => {
             if (!prevPlan) return null;
-            let newRequirements = prevPlan.specialRequirements ? [...prevPlan.specialRequirements] : [];
+            const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
+            const currentRequirements = newPlan.specialRequirements || [];
+            
             if (isChecked) {
-                if (!newRequirements.some(r => r.name === requirementName)) {
-                    newRequirements.push({ name: requirementName, data: {} });
+                if (!currentRequirements.some(r => r.name === requirementName)) {
+                    newPlan.specialRequirements = [...currentRequirements, { name: requirementName, data: {} }];
                 }
             } else {
-                newRequirements = newRequirements.filter(r => r.name === requirementName);
+                newPlan.specialRequirements = currentRequirements.filter(r => r.name !== requirementName);
             }
-            return { ...prevPlan, specialRequirements: newRequirements };
+            return newPlan;
         });
     };
 
-    const handleTruckServiceChange = (serviceName: string, isChecked: boolean) => {
+    const availableModalityServices = useMemo(() => {
+        if (!plan || plan.modality === 'vessel') return []; // Handled separately
+        const modServices = settings.modalityServices?.[plan.modality] || [];
+        const prodServices = settings.productServices || [];
+        return [...new Set([...modServices, ...prodServices])].sort();
+    }, [settings, plan]);
+
+    const handleModalityServiceChange = (serviceName: string, isChecked: boolean) => {
         if (!plan) return;
         
-        // Assuming services are on the first transfer for trucks
+        // Assuming services are on the first transfer for trucks/rail
         const lineIndex = 0;
         const transferIndex = 0;
 
@@ -225,7 +302,6 @@ const OperationPlan: React.FC = () => {
             if (!prevPlan) return null;
             const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
 
-            // Ensure transfer plan structure exists
             if (!newPlan.transferPlan[lineIndex]) {
                 newPlan.transferPlan[lineIndex] = { infrastructureId: '', transfers: [] };
             }
@@ -238,17 +314,16 @@ const OperationPlan: React.FC = () => {
                 };
             }
             
-            let services = newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices || [];
+            const currentServices = newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices || [];
 
             if (isChecked) {
-                if (!services.some(s => s.name === serviceName)) {
-                    services.push({ name: serviceName, data: {} });
+                if (!currentServices.some(s => s.name === serviceName)) {
+                    newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices = [...currentServices, { name: serviceName, data: {} }];
                 }
             } else {
-                services = services.filter(s => s.name === serviceName);
+                newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices = currentServices.filter(s => s.name !== serviceName);
             }
 
-            newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices = services;
             return newPlan;
         });
     };
@@ -262,45 +337,20 @@ const OperationPlan: React.FC = () => {
     const availableDirections = MODALITY_DIRECTIONS[plan.modality] || [];
     const allInfrastructureForModality = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
         .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === plan.modality);
-    const availableVesselRequirements = settings.specialServices.vessel || [];
-    const availableTruckServices = settings.specialServices.truck || [];
-    const selectedTruckServices = plan.transferPlan[0]?.transfers[0]?.specialServices.map(s => s.name) || [];
     
-    const isAlreadyActive = plan.status === 'active';
-    const isTruck = plan.modality === 'truck';
-
-    const getActivateButtonTitle = () => {
-        if (isAlreadyActive) return 'This operation is already active.';
-        if (!validation.isValid) return `Cannot activate:\n- ${validation.issues.join('\n- ')}`;
-        return 'Activate Operation';
-    };
-
-    const checkCompatibility = (lineId: string, product: string) => {
-        if (!lineId || !product) return { compatible: true, message: '' };
-        const dockline = currentTerminalSettings.docklines?.[lineId];
-        if (!dockline) return { compatible: true, message: '' };
-
-        const lastProduct = dockline.lastProduct;
-        const lastGroup = settings.productGroups[lastProduct];
-        const currentGroup = settings.productGroups[product];
-
-        if (lastGroup && currentGroup && settings.compatibility[lastGroup]?.[currentGroup] === 'X') {
-            return { compatible: false, message: `Incompatible: Last product on ${lineId} was ${lastProduct} (${lastGroup}).` };
-        }
-        return { compatible: true, message: '' };
-    };
-
+    const availableVesselServices = settings.vesselServices || [];
+    const selectedModalityServices = (plan.transferPlan[0]?.transfers[0]?.specialServices || []).map(s => s.name);
+    
     return (
         <>
-            {isServicesModalOpen && editingTransfer && plan && (
-                <SpecialServices
-                    isOpen={isServicesModalOpen}
-                    onClose={closeServicesModal}
-                    transfer={plan.transferPlan[editingTransfer.lineIndex].transfers[editingTransfer.transferIndex]}
-                    modality={plan.modality}
-                    onUpdate={handleServicesUpdate}
-                />
-            )}
+            <RequeuePriorityModal
+                isOpen={priorityModalOpen}
+                onClose={() => setPriorityModalOpen(false)}
+                onSelect={(priority) => {
+                    setPriorityModalOpen(false);
+                    handleReschedule(priority);
+                }}
+            />
             <CancelModal
                 isOpen={isCancelModalOpen}
                 onClose={() => setIsCancelModalOpen(false)}
@@ -309,30 +359,20 @@ const OperationPlan: React.FC = () => {
             />
             <div className="p-4 sm:p-6 space-y-6">
                 <div className="flex justify-between items-center">
-                    <h2 className="text-3xl font-bold text-brand-dark">
-                        Plan: {plan.transportId} ({plan.modality})
+                    <h2 className="text-3xl font-bold text-brand-dark flex items-center gap-3">
+                        <span>Plan: {plan.transportId}</span>
+                        <i className={`fas ${getIcon(plan.modality)} text-3xl text-text-secondary`} title={plan.modality}></i>
                     </h2>
                     <div className="flex space-x-2">
                         <button onClick={() => setIsCancelModalOpen(true)} className="btn-danger"><i className="fas fa-ban mr-2"></i>Cancel Operation</button>
                         <button onClick={handleSave} className="btn-secondary"><i className="fas fa-save mr-2"></i>Save & Close</button>
-                         {!validation.isValid && plan.status === 'planned' && (
+                         {!validation.isValid && plan.status === 'planned' && canUserReschedule && (
                              <button 
-                                onClick={handleReschedule} 
+                                onClick={() => setPriorityModalOpen(true)}
                                 className="btn-primary !bg-orange-500 hover:!bg-orange-600"
                                 title="This plan has issues and should be rescheduled."
                             >
                                 <i className="fas fa-calendar-alt mr-2"></i>Reschedule
-                            </button>
-                        )}
-                        {!isTruck && (
-                            <button 
-                                onClick={handleActivate} 
-                                disabled={!validation.isValid || isAlreadyActive} 
-                                className="btn-primary disabled:!bg-slate-400 disabled:cursor-not-allowed" 
-                                title={getActivateButtonTitle()}
-                            >
-                                <i className="fas fa-check mr-2"></i>
-                                {isAlreadyActive ? 'Activated' : 'Activate'}
                             </button>
                         )}
                     </div>
@@ -348,7 +388,7 @@ const OperationPlan: React.FC = () => {
                 )}
 
                 <div className="card p-6">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                         <div>
                             <label>Transport ID</label>
                             <input type="text" value={plan.transportId} onChange={(e) => handlePlanChange('transportId', e.target.value)} />
@@ -365,6 +405,10 @@ const OperationPlan: React.FC = () => {
                                 value={plan.eta} 
                                 onChange={(isoString) => handlePlanChange('eta', isoString)} 
                             />
+                        </div>
+                         <div>
+                            <label>Estimated Duration (hours)</label>
+                            <input type="number" value={plan.durationHours || getOperationDurationHours(plan)} onChange={(e) => handlePlanChange('durationHours', parseFloat(e.target.value) || 1)} min="0.5" step="0.5"/>
                         </div>
                     </div>
                      {plan.modality === 'truck' && (
@@ -393,14 +437,17 @@ const OperationPlan: React.FC = () => {
                             </button>
                             {plan.modality === 'vessel' && (
                                 <button onClick={() => setActiveTab('requirements')} className={`tab ${activeTab === 'requirements' ? 'active' : ''}`}>
-                                    Special Requirements
+                                    Vessel Services
                                 </button>
                             )}
-                             {plan.modality === 'truck' && (
+                             {(plan.modality === 'truck' || plan.modality === 'rail') && (
                                 <button onClick={() => setActiveTab('services')} className={`tab ${activeTab === 'services' ? 'active' : ''}`}>
                                     Services
                                 </button>
                             )}
+                            <button onClick={() => setActiveTab('documents')} className={`tab ${activeTab === 'documents' ? 'active' : ''}`}>
+                                Documents ({(plan.documents || []).length})
+                            </button>
                         </nav>
                     </div>
 
@@ -424,9 +471,38 @@ const OperationPlan: React.FC = () => {
                                         </div>
                                         
                                         {line.transfers.map((transfer, transferIndex) => {
-                                            const compatibility = checkCompatibility(line.infrastructureId, transfer.product);
+                                            const compatibility = checkCompatibility(line.infrastructureId, transfer.product, line.transfers, transferIndex);
 
-                                            // Smarter dropdown logic
+                                            const incompatibilityInfo = useMemo(() => {
+                                                if (!transfer.product) return null;
+                                        
+                                                let prevProduct: string | undefined;
+                                                let context: 'line' | 'sequence' | null = null;
+                                        
+                                                if (transferIndex === 0) {
+                                                    prevProduct = currentTerminalSettings.docklines?.[line.infrastructureId]?.lastProduct;
+                                                    context = 'line';
+                                                } else {
+                                                    prevProduct = line.transfers[transferIndex - 1]?.product;
+                                                    context = 'sequence';
+                                                }
+                                        
+                                                if (!prevProduct) return null;
+                                        
+                                                const prevGroup = settings.productGroups[prevProduct];
+                                                const currentGroup = settings.productGroups[transfer.product];
+                                        
+                                                if (prevGroup && currentGroup && settings.compatibility[prevGroup]?.[currentGroup] === 'X') {
+                                                    return {
+                                                        is_incompatible: true,
+                                                        previous_product: prevProduct,
+                                                        context,
+                                                    };
+                                                }
+                                        
+                                                return null;
+                                            }, [transfer.product, transferIndex, line.infrastructureId, line.transfers, settings, currentTerminalSettings]);
+
                                             const availableProductsForCustomer = (() => {
                                                 if (!transfer.customer) return [];
                                                 const customerProducts = new Set(
@@ -446,7 +522,7 @@ const OperationPlan: React.FC = () => {
                                                 }
 
                                                 const customerAllowedTanks = currentTerminalSettings.customerMatrix
-                                                    .find(m => m.customer === transfer.customer && m.product === transfer.product)?.tanks || [];
+                                                    ?.find(m => m.customer === transfer.customer && m.product === transfer.product)?.tanks || [];
                                                 
                                                 const infraAllowedTanks = currentTerminalSettings.infrastructureTankMapping?.[line.infrastructureId] || [];
                                                 
@@ -462,6 +538,11 @@ const OperationPlan: React.FC = () => {
                                                 }
                                                 return { finalTankOptions: options, tankWarningMessage: warning };
                                             })();
+                                            
+                                            const transferIssues = validation.issues.filter(issue => 
+                                                (issue.includes(transfer.from) || issue.includes(transfer.to) || issue.includes(transfer.product))
+                                            );
+
 
                                             const isFromTank = transfer.direction.startsWith('Tank to');
                                             const isToTank = transfer.direction.endsWith(' to Tank');
@@ -471,26 +552,53 @@ const OperationPlan: React.FC = () => {
 
                                             return (
                                                 <div key={transferIndex} className="pt-6 mt-6 border-t relative bg-white p-4 rounded-lg shadow-sm">
+                                                    
+                                                    {incompatibilityInfo && (
+                                                        <div className="p-3 mb-4 bg-red-100 border border-red-300 rounded-lg flex items-center justify-between gap-4">
+                                                            <div>
+                                                                <h5 className="font-bold text-red-800"><i className="fas fa-exclamation-triangle mr-2"></i>Incompatible Product</h5>
+                                                                <p className="text-sm text-red-700">
+                                                                    Cleaning is required after <strong>{incompatibilityInfo.previous_product}</strong> ({incompatibilityInfo.context === 'line' ? 'last on line' : 'previous transfer'}) before <strong>{transfer.product}</strong>.
+                                                                </p>
+                                                            </div>
+                                                            {!transfer.preTransferCleaningSof ? (
+                                                                <button onClick={() => handleAddCleaning(lineIndex, transferIndex)} className="btn-primary !bg-red-600 hover:!bg-red-700 flex-shrink-0">Add Required Cleaning</button>
+                                                            ) : (
+                                                                <div className="flex items-center gap-2 text-green-700 font-semibold text-sm">
+                                                                    <i className="fas fa-check-circle"></i> Cleaning Added
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
                                                     <h4 className="font-semibold mb-4 text-text-secondary">Transfer #{transferIndex + 1}</h4>
                                                     <div className="absolute top-4 right-0">
                                                         {plan.modality !== 'truck' && <button onClick={() => handleRemoveTransfer(lineIndex, transferIndex)} className="btn-icon danger" title="Remove Transfer"><i className="fas fa-times"></i></button>}
                                                     </div>
 
-                                                    {plan.modality !== 'truck' && <div className="mb-4">
-                                                        <div className="flex items-center justify-between">
-                                                            <div>
-                                                                <h5 className="font-semibold text-text-secondary text-sm">Special Services:</h5>
-                                                                <div className="flex flex-wrap items-center gap-2 mt-1">
-                                                                    {transfer.specialServices.length > 0 ? transfer.specialServices.map(s => (
-                                                                        <span key={s.name} className="text-xs font-semibold bg-slate-200 text-slate-700 px-2 py-1 rounded-full">{s.name}</span>
-                                                                    )) : <span className="text-xs italic text-text-tertiary">None</span>}
-                                                                </div>
+                                                    {plan.modality === 'vessel' && (
+                                                        <div className="mt-4 pt-4 border-t">
+                                                            <h5 className="font-semibold text-text-secondary text-sm mb-2">Transfer Services</h5>
+                                                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                                                {availableVesselTransferServices.map(service => {
+                                                                    const isChecked = transfer.specialServices.some(s => s.name === service);
+                                                                    return (
+                                                                        <label key={service} className="flex items-center space-x-2 p-1 rounded-md hover:bg-gray-50 cursor-pointer">
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
+                                                                                checked={isChecked}
+                                                                                onChange={(e) => handleVesselTransferServiceChange(lineIndex, transferIndex, service, e.target.checked)}
+                                                                            />
+                                                                            <span className="text-xs font-medium text-gray-700">{service}</span>
+                                                                        </label>
+                                                                    );
+                                                                })}
                                                             </div>
-                                                            <button onClick={() => openServicesModal(lineIndex, transferIndex)} className="btn-secondary !py-1 !px-3 text-sm" title="Edit Special Services"><i className="fas fa-cog mr-2"></i>Edit Services</button>
                                                         </div>
-                                                    </div>}
+                                                    )}
 
-                                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 mt-4">
                                                         <div>
                                                             <label>Customer</label>
                                                             <select value={transfer.customer} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'customer', e.target.value)}>
@@ -506,9 +614,14 @@ const OperationPlan: React.FC = () => {
                                                             </select>
                                                             {!compatibility.compatible && <p className="text-red-600 text-xs mt-1 font-semibold">{compatibility.message}</p>}
                                                         </div>
-                                                        <div>
+                                                        <div className="relative">
                                                             <label>Tonnes</label>
                                                             <input type="number" value={transfer.tonnes} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'tonnes', e.target.value)} />
+                                                             {transferIssues.length > 0 && (
+                                                                <div className="absolute top-1/2 right-2 mt-1" title={transferIssues.join('\n')}>
+                                                                    <i className="fas fa-exclamation-triangle text-yellow-500"></i>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                         
                                                         <div className="lg:col-span-2 flex items-end gap-2">
@@ -576,10 +689,10 @@ const OperationPlan: React.FC = () => {
 
                         {activeTab === 'requirements' && plan.modality === 'vessel' && (
                             <div>
-                                <h3 className="text-xl font-semibold text-text-primary mb-4">Special Requirements</h3>
-                                <p className="text-sm text-text-secondary mb-4">Select all requirements that apply to this vessel operation.</p>
+                                <h3 className="text-xl font-semibold text-text-primary mb-4">Vessel Services</h3>
+                                <p className="text-sm text-text-secondary mb-4">Select all services that apply to this vessel operation.</p>
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                                    {availableVesselRequirements.map(req => {
+                                    {availableVesselServices.map(req => {
                                         const isChecked = plan.specialRequirements?.some(r => r.name === req) ?? false;
                                         return (
                                             <label key={req} className="flex items-center space-x-3 p-2 rounded-md hover:bg-gray-50 cursor-pointer">
@@ -597,20 +710,20 @@ const OperationPlan: React.FC = () => {
                             </div>
                         )}
 
-                        {activeTab === 'services' && plan.modality === 'truck' && (
+                        {activeTab === 'services' && (plan.modality === 'truck' || plan.modality === 'rail') && (
                             <div>
                                 <h3 className="text-xl font-semibold text-text-primary mb-4">Special Services</h3>
-                                <p className="text-sm text-text-secondary mb-4">Select all services that apply to this truck operation.</p>
+                                <p className="text-sm text-text-secondary mb-4">Select all services that apply to this {plan.modality} operation.</p>
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                                    {availableTruckServices.map(service => {
-                                        const isChecked = selectedTruckServices.includes(service);
+                                    {availableModalityServices.map(service => {
+                                        const isChecked = selectedModalityServices.includes(service);
                                         return (
                                             <label key={service} className="flex items-center space-x-3 p-2 rounded-md hover:bg-gray-50 cursor-pointer">
                                                 <input
                                                     type="checkbox"
                                                     className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
                                                     checked={isChecked}
-                                                    onChange={(e) => handleTruckServiceChange(service, e.target.checked)}
+                                                    onChange={(e) => handleModalityServiceChange(service, e.target.checked)}
                                                 />
                                                 <span className="text-sm font-medium text-gray-700">{service}</span>
                                             </label>
@@ -618,6 +731,9 @@ const OperationPlan: React.FC = () => {
                                     })}
                                 </div>
                             </div>
+                        )}
+                        {activeTab === 'documents' && (
+                            <DocumentManager operation={plan} onUpdate={handleDocumentUpdate as any} />
                         )}
                     </div>
                 </div>

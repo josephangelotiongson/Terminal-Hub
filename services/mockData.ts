@@ -1,378 +1,461 @@
-import { AppSettings, Modality, TerminalSettings, ContractRates, Operation, ActivityLogItem, SOFItem } from '../types';
-import { VESSEL_COMMON_EVENTS, VESSEL_COMMODITY_EVENTS, SOF_EVENTS_MODALITY } from '../constants';
+
+import { AppSettings, Modality, TerminalSettings, ContractRates, Operation, ActivityLogItem, SOFItem, Hold, RequeueDetails } from '../types';
+import { SOF_EVENTS_MODALITY, VESSEL_COMMODITY_EVENTS, VESSEL_COMMON_EVENTS, MOCK_CURRENT_TIME, LINE_CLEANING_EVENTS } from '../constants';
+// FIX: Corrected typo in imported function name from deriveTruckStatusFromSof to deriveStatusFromSof.
+import { deriveStatusFromSof, validateOperationPlan, calculateAndSetCycleTime } from '../utils/helpers';
+import { TERMINAL_MASTER_DATA, MODALITY_SERVICES, PRODUCT_SERVICES, DEFAULT_SETTINGS } from './masterData';
 
 // ===================================================================================
-//  EXPANDED MASTER DATA
+//  CONSISTENT MOCK OPERATIONS GENERATION
 // ===================================================================================
 
-export const MASTER_PRODUCTS: string[] = [
-    'Petro-Fuel 95', 'ULP 98', 'Diesel Max', 'Jet A-1', 'Crude Oil', 'LNG',
-    'Agri-Oil Prime', 'Palm Oil', 
-    'Bio-Fuel E85', 'Ethanol',
-    'Indu-Chem X7', 'Hexa-Solvent 200', 'N-Butanol X', 'Poly-Mondur 45', 
-    'Glyco-Coolant B', 'Formic Solution 85', 'Methanol', 'Caustic Soda'
-];
+/**
+ * NOTE TO MAINTAINER & AI:
+ * All time-based calculations are derived relative to a fixed constant `MOCK_CURRENT_TIME`.
+ * This ensures that every time the app is loaded, the current day appears as a busy, active day,
+ * with the state of the terminal being predictable. This is a core requirement.
+ * The truck data is now systematically generated to ensure a saturated, non-overlapping schedule.
+ *
+ * PLEASE DO NOT:
+ * - Revert this to a dynamic `new Date()` reference.
+ */
 
-export const PRODUCT_GROUPS: { [product: string]: string } = {
-    'Petro-Fuel 95': 'Hydrocarbon', 'ULP 98': 'Hydrocarbon', 'Diesel Max': 'Hydrocarbon',
-    'Jet A-1': 'Hydrocarbon', 'Crude Oil': 'Hydrocarbon', 'LNG': 'Hydrocarbon',
-    'Agri-Oil Prime': 'Edible Oil', 'Palm Oil': 'Edible Oil',
-    'Bio-Fuel E85': 'Biofuel', 'Ethanol': 'Biofuel',
-    'Indu-Chem X7': 'Caustic', 'Caustic Soda': 'Caustic',
-    'Hexa-Solvent 200': 'Chemical', 'N-Butanol X': 'Chemical', 'Poly-Mondur 45': 'Chemical',
-    'Glyco-Coolant B': 'Chemical', 'Formic Solution 85': 'Chemical', 'Methanol': 'Chemical'
-};
-
-export const SPECIAL_SERVICES: { [key in Modality]: string[] } = {
-    vessel: [
-        'Aquis Quarantine', 'Change of products', 'Customs arrival', 'Detailed Sample Logging',
-        'Different batches', 'Emptying tanks', 'Heating tanks', 'Line Purge Volume Log',
-        'Marpol surveyor', 'Multi-terminal vessel', 'Ship stability/positioning',
-        'Slopping requirements', 'Stop dips on tanks', 'Tanks priority', 'Trucks during vessel',
-        'Vessel tank inerting', 'Water dilution'
-    ].sort(),
-    truck: ['Trucks during vessel', 'Stop dips on tanks', 'Different batches', 'Nitrogen Purge'],
-    rail: ['Slopping requirements', 'Water dilution', 'Tank priority', 'In-line Blending']
-};
-
-export const CONTRACT_RATES: ContractRates = {
-    serviceRates: {
-        "Heating tanks": 500.00, "Detailed Sample Logging": 250.00, "Ship stability/positioning": 1000.00,
-        "Multi-terminal vessel": 1500.00, "Line Purge Volume Log": 300.00, "Trucks during vessel": 75.00,
-        "Stop dips on tanks": 50.00, "Different batches": 100.00, "Slopping requirements": 400.00,
-        "Water dilution": 200.00, "Tank priority": 150.00, "Nitrogen Purge": 120.00, "In-line Blending": 600.00
-    },
-    customerRates: {
-        'Apex Refining': { 'Petro-Fuel 95': { ratePerTonne: 5.50 }, 'ULP 98': { ratePerTonne: 5.60 }, 'Diesel Max': { ratePerTonne: 5.75 }, 'Jet A-1': { ratePerTonne: 9.50 } },
-        'Terra Verde Agriculture': { 'Agri-Oil Prime': { ratePerTonne: 8.20 }, 'Bio-Fuel E85': { ratePerTonne: 7.90 }, 'Ethanol': { ratePerTonne: 8.10 } },
-        'GlobalChem Industries': { 'Indu-Chem X7': { ratePerTonne: 12.50 }, 'Methanol': { ratePerTonne: 11.00 }, 'Petro-Fuel 95': { ratePerTonne: 5.65 } },
-        'Coastal Energy Supply': { 'Diesel Max': { ratePerTonne: 5.85 }, 'Agri-Oil Prime': { ratePerTonne: 8.30 }, 'Crude Oil': { ratePerTonne: 4.50 } },
-        'Vantage Polymers': { 'Hexa-Solvent 200': { ratePerTonne: 15.00 } },
-        'Veridian Synthetics': { 'N-Butanol X': { ratePerTonne: 14.50 } },
-        'Solara Chemicals': { 'Poly-Mondur 45': { ratePerTonne: 18.00 } },
-        'Quantum Nitriles': { 'Glyco-Coolant B': { ratePerTonne: 11.75 } },
-        'Axiom Materials': { 'Formic Solution 85': { ratePerTonne: 13.25 } },
-        'Aviation Fuels Inc': { 'Jet A-1': { ratePerTonne: 9.80 } },
-        'National Rail Freight': { 'Diesel Max': { ratePerTonne: 5.80 }, 'Ethanol': { ratePerTonne: 8.00 } },
-        'BulkTrans': { 'ULP 98': { ratePerTonne: 5.55 }, 'Diesel Max': { ratePerTonne: 5.70 } },
-        'Citywide Fuels': { 'Diesel Max': { ratePerTonne: 5.90 } },
-        'Riverton Chemicals': { 'Methanol': { ratePerTonne: 11.20 }, 'Caustic Soda': { ratePerTonne: 14.00 } }
-    }
-};
-
-export const TERMINAL_MASTER_DATA: { [key: string]: Partial<TerminalSettings> } = {
-    PAL: {
-        customerMatrix: [
-            // Existing + New
-            { customer: 'Apex Refining', product: 'Petro-Fuel 95', tanks: ['B45', 'B46', 'A01'] }, { customer: 'Apex Refining', product: 'ULP 98', tanks: ['A01', 'A02'] }, { customer: 'Apex Refining', product: 'Diesel Max', tanks: ['C13', 'C38'] },
-            { customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', tanks: ['B47'] }, { customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', tanks: ['A02'] },
-            { customer: 'GlobalChem Industries', product: 'Indu-Chem X7', tanks: ['E14', 'E15'] }, { customer: 'GlobalChem Industries', product: 'Methanol', tanks: ['E15'] }, { customer: 'GlobalChem Industries', product: 'Petro-Fuel 95', tanks: ['A01'] },
-            { customer: 'Coastal Energy Supply', product: 'Diesel Max', tanks: ['C13'] }, { customer: 'Coastal Energy Supply', product: 'Crude Oil', tanks: ['D05'] },
-            { customer: 'Aviation Fuels Inc', product: 'Jet A-1', tanks: ['J10', 'J11'] },
-            { customer: 'National Rail Freight', product: 'Diesel Max', tanks: ['C38'] }, { customer: 'National Rail Freight', product: 'Ethanol', tanks: ['A02'] },
-            { customer: 'BulkTrans', product: 'ULP 98', tanks: ['A01', 'A02'] },
-            { customer: 'Riverton Chemicals', product: 'Caustic Soda', tanks: ['E14'] },
-        ],
-        docklines: { 'L12': { lastProduct: 'Petro-Fuel 95' }, 'L13': { lastProduct: 'Bio-Fuel E85' }, 'L14': { lastProduct: 'Agri-Oil Prime' }, 'L23': { lastProduct: 'Diesel Max' } },
-        infrastructureTankMapping: {
-            'L12': ['A01', 'B45', 'B46'], 'L13': ['A02', 'B47'], 'L14': ['B47', 'J10', 'J11'], 'L23': ['C13', 'C38', 'D05'],
-            'Bay 1': ['C13', 'C38', 'E14', 'E15'], 'Bay 2': ['C13', 'C38', 'B47'], 'Bay 3': ['A01', 'E14', 'E15'], 'Bay 4': ['A01', 'A02', 'J10', 'J11'],
-            'Siding A': ['B45', 'B46', 'D05'], 'Siding B': ['C13', 'C38']
-        },
-        infrastructureModalityMapping: {
-            'L12': 'vessel', 'L13': 'vessel', 'L14': 'vessel', 'L23': 'vessel',
-            'Bay 1': 'truck', 'Bay 2': 'truck', 'Bay 3': 'truck', 'Bay 4': 'truck',
-            'Siding A': 'rail', 'Siding B': 'rail'
-        },
-        assetHolds: { 'L12': { active: false, reason: '', user: '', time: null }, 'Bay 4': { active: true, reason: 'Pump Maintenance', user: 'Maint. Planner', time: new Date().toISOString() }, 'Siding A': { active: false, reason: '', user: '', time: null }, 'Siding B': { active: false, reason: '', user: '', time: null } },
-        tankHolds: { 'B47': { active: true, reason: 'Inspection', user: 'Maint. Planner', time: new Date().toISOString() } },
-        masterTanks: {
-            'A01': { capacity: 15000, current: 8000 }, 'A02': { capacity: 15000, current: 2500 },
-            'B45': { capacity: 20000, current: 11000 }, 'B46': { capacity: 20000, current: 18500 }, 'B47': { capacity: 10000, current: 1000 },
-            'C13': { capacity: 25000, current: 22000 }, 'C38': { capacity: 25000, current: 5000 },
-            'D05': { capacity: 50000, current: 35000 },
-            'E14': { capacity: 5000, current: 1500 }, 'E15': { capacity: 5000, current: 1200 },
-            'J10': { capacity: 12000, current: 9000 }, 'J11': { capacity: 12000, current: 4000 }
-        },
-        masterCustomers: ['Apex Refining', 'Terra Verde Agriculture', 'GlobalChem Industries', 'Coastal Energy Supply', 'Vantage Polymers', 'Veridian Synthetics', 'Solara Chemicals', 'Quantum Nitriles', 'Axiom Materials', 'Aviation Fuels Inc', 'National Rail Freight', 'BulkTrans', 'Riverton Chemicals'],
-        activeOpsDisplayFields: { orderNumber: true, licensePlate: true, product: true, tonnes: false },
-    },
-    CBY: {
-        customerMatrix: [{ customer: 'Citywide Fuels', product: 'Diesel Max', tanks: ['T50', 'T51'] }],
-        docklines: { 'S1': { lastProduct: 'Diesel Max' } },
-        infrastructureTankMapping: { 'S1': ['T50', 'T51'], 'Bay 1': ['T50'], 'Bay 2': ['T51'] },
-        infrastructureModalityMapping: { 'S1': 'vessel', 'Bay 1': 'truck', 'Bay 2': 'truck' },
-        assetHolds: {}, tankHolds: {},
-        masterTanks: { 'T50': { capacity: 10000, current: 5000 }, 'T51': { capacity: 10000, current: 8000 } },
-        masterCustomers: ['Citywide Fuels'],
-        activeOpsDisplayFields: { orderNumber: true, licensePlate: true, product: true, tonnes: true },
-    },
-     RVE: {
-        customerMatrix: [{ customer: 'Riverton Chemicals', product: 'Methanol', tanks: ['R1', 'R2'] }, { customer: 'Riverton Chemicals', product: 'Caustic Soda', tanks: ['R3'] }],
-        infrastructureTankMapping: { 'L1': ['R1', 'R2', 'R3'], 'Rail 1': ['R1', 'R2', 'R3'] },
-        infrastructureModalityMapping: { 'L1': 'vessel', 'Rail 1': 'rail' },
-        assetHolds: {}, tankHolds: {},
-        masterTanks: { 'R1': { capacity: 8000, current: 1000 }, 'R2': { capacity: 8000, current: 4000 }, 'R3': { capacity: 5000, current: 4500 } },
-        masterCustomers: ['Riverton Chemicals'],
-        activeOpsDisplayFields: { orderNumber: true, product: true, tonnes: true },
-    },
-};
-
-export const DEFAULT_SETTINGS: AppSettings = {
-    productGroups: PRODUCT_GROUPS,
-    compatibility: {
-        'Hydrocarbon': { 'Hydrocarbon': 'C', 'Edible Oil': 'X', 'Biofuel': 'C', 'Caustic': 'X', 'Chemical': 'X' },
-        'Edible Oil': { 'Hydrocarbon': 'X', 'Edible Oil': 'C', 'Biofuel': 'C', 'Caustic': 'X', 'Chemical': 'X' },
-        'Biofuel': { 'Hydrocarbon': 'C', 'Edible Oil': 'C', 'Biofuel': 'C', 'Caustic': 'X', 'Chemical': 'X' },
-        'Caustic': { 'Hydrocarbon': 'X', 'Edible Oil': 'X', 'Biofuel': 'X', 'Caustic': 'C', 'Chemical': 'X' },
-        'Chemical': { 'Hydrocarbon': 'X', 'Edible Oil': 'X', 'Biofuel': 'X', 'Caustic': 'X', 'Chemical': 'C' }
-    },
-    masterProducts: MASTER_PRODUCTS,
-    specialServices: SPECIAL_SERVICES,
-    contracts: CONTRACT_RATES,
-    ...TERMINAL_MASTER_DATA
-};
-
-
-// ===================================================================================
-//  EXPANDED MOCK OPERATIONS GENERATION
-// ===================================================================================
-
-const now = new Date();
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60000);
 const subMinutes = (date: Date, minutes: number) => new Date(date.getTime() - minutes * 60000);
 const addHours = (date: Date, hours: number) => new Date(date.getTime() + hours * 3600 * 1000);
 const subHours = (date: Date, hours: number) => new Date(date.getTime() - hours * 3600 * 1000);
-const addDays = (date: Date, days: number) => new Date(date.getTime() + days * 24 * 3600 * 1000);
-const subDays = (date: Date, days: number) => new Date(date.getTime() - days * 24 * 3600 * 1000);
 
-const generateHistoryFromSof = (baseHistory: ActivityLogItem[], completedSof: SOFItem[]): ActivityLogItem[] => {
-    const sofActivities = completedSof.map(s => ({
-        time: s.time, user: s.user, action: 'SOF_UPDATE' as const, details: `${s.event} marked complete.`
-    }));
-    return [...baseHistory, ...sofActivities].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+const progressSofArray = (
+    sofArray: SOFItem[], 
+    allEvents: string[], 
+    targetEvent: string, 
+    baseTime: Date, 
+    user: string,
+    stepMinutes: number = 5,
+    logContext: string = ''
+): { updatedSof: SOFItem[], lastTime: Date, activityLogs: ActivityLogItem[] } => {
+    const newSof = JSON.parse(JSON.stringify(sofArray));
+    const targetIndex = allEvents.findIndex(e => e === targetEvent);
+    let lastTime = baseTime;
+    const activityLogs: ActivityLogItem[] = [];
+
+    if (targetIndex > -1) {
+        for (let i = 0; i <= targetIndex; i++) {
+            const eventName = allEvents[i];
+            const eventIndexInSof = newSof.findIndex((s: SOFItem) => s.event === eventName);
+            if (eventIndexInSof > -1) {
+                lastTime = addMinutes(baseTime, i * stepMinutes);
+                newSof[eventIndexInSof] = {
+                    ...newSof[eventIndexInSof],
+                    status: 'complete',
+                    time: lastTime.toISOString(),
+                    user: user
+                };
+                 activityLogs.push({
+                    time: lastTime.toISOString(),
+                    user: user,
+                    action: 'SOF_UPDATE',
+                    details: `${eventName} marked complete${logContext}.`
+                });
+            }
+        }
+    }
+    return { updatedSof: newSof, lastTime, activityLogs };
 };
 
-const createCompletedOp = (
-    id: string,
-    modality: Modality,
-    terminal: string,
-    transportId: string,
-    completedTime: Date,
-    customer: string,
-    product: string,
-    tonnes: number,
-    infraId: string,
-    tank: string
-): Operation => {
-    
-    let totalDurationHours: number;
-    let events: string[];
-    let specialCycleTimeEvents: Record<string, number> = {}; // in hours from start
-
-    switch (modality) {
-        case 'vessel':
-            totalDurationHours = 8 + Math.random() * 8; // 8-16 hours
-            events = SOF_EVENTS_MODALITY.vessel.concat(VESSEL_COMMODITY_EVENTS);
-            specialCycleTimeEvents = { 'NOR Tendered': -2, 'Alongside Berth': 0.5, 'Departure': totalDurationHours + 1 };
-            break;
-        case 'rail':
-            totalDurationHours = 2 + Math.random() * 2; // 2-4 hours
-            events = SOF_EVENTS_MODALITY.rail;
-            break;
-        default: // truck
-            totalDurationHours = 0.75 + Math.random() * 0.75; // 45-90 mins
-            events = SOF_EVENTS_MODALITY.truck;
-            break;
-    }
-
-    const eta = subHours(completedTime, totalDurationHours);
-    const cycleTimeData: Record<string, string> = {};
-
-    let lastTime = new Date(eta);
-    // Add special vessel events
-    for (const [event, hourOffset] of Object.entries(specialCycleTimeEvents)) {
-        cycleTimeData[event] = addHours(eta, hourOffset).toISOString();
+export const createMockHolds = (terminal: string): Hold[] => {
+    if (terminal !== 'PAL') {
+        return [];
     }
     
-    const completedSof = events.map((event, index) => {
-        const stepDuration = (totalDurationHours * 3600 * 1000) / events.length;
-        const randomFactor = (Math.random() * 0.4 + 0.8); // 80% to 120% of average step time
-        lastTime = new Date(lastTime.getTime() + stepDuration * randomFactor);
-        cycleTimeData[event] = lastTime.toISOString();
-        return { event, status: 'complete', time: lastTime.toISOString(), user: 'AUTO', loop: 1 } as SOFItem;
+    const baseTime = new Date(MOCK_CURRENT_TIME);
+    baseTime.setMinutes(baseTime.getMinutes() > 30 ? 60 : 30, 0, 0);
+
+    const holds: Hold[] = [
+        {
+            id: 'hold-maint-bay2', resource: 'Bay 2', terminal: 'PAL',
+            startTime: addHours(baseTime, 1).toISOString(),
+            endTime: addHours(baseTime, 3).toISOString(),
+            reason: 'Preventative Maintenance', user: 'Maintenance Planner',
+            status: 'approved', workOrderStatus: 'Acknowledged',
+        },
+        {
+            id: 'hold-safety-bay4', resource: 'Bay 4', terminal: 'PAL',
+            startTime: addHours(baseTime, 4).toISOString(),
+            endTime: addHours(baseTime, 5).toISOString(),
+            reason: 'Safety Drill', user: 'Ops Lead',
+            status: 'approved',
+        },
+        {
+            id: 'hold-pending-sidingA', resource: 'Siding A', terminal: 'PAL',
+            startTime: addHours(baseTime, 2).toISOString(),
+            endTime: addHours(baseTime, 6).toISOString(),
+            reason: 'Corrective Maintenance', user: 'Operator 1',
+            status: 'pending', workOrderStatus: 'Requested',
+        }
+    ];
+
+    return holds;
+};
+
+// Hardcoded lists for realistic, consistent data
+const TRUCK_COMPANIES = ['BulkTrans', 'Coastal Carriers', 'Riverton Haul', 'CrossCountry', 'Apex Logistics', 'PetroHaul', 'Citywide Fuels', 'TerraTrans', 'ChemMove', 'FastLane Freight', 'LiquidLines', 'Tanker Express'];
+const DRIVER_NAMES = ['John Smith', 'Maria Garcia', 'David Chen', 'Fatima Al-Jamil', 'James Kirk', 'Michael Burnham', 'Sarah Connor', 'Ellen Ripley', 'Chrisjen Avasarala', 'Bobbie Draper', 'Ken Adams', 'Isabelle Rossi', 'Liam O\'Connell', 'Anya Sharma', 'Deckard Shaw', 'Han Lue', 'Gisele Yashar', 'Dominic Toretto', 'Brian O\'Conner', 'Letty Ortiz', 'Roman Pearce', 'Tej Parker', 'Mia Toretto', 'Luke Hobbs', 'Elena Neves', 'Anakin Skywalker', 'Leia Organa', 'Han Solo', 'Ben Kenobi', 'Rey Palpatine'];
+
+
+// NEW: Fully hardcoded truck schedule to guarantee no overlaps
+const getHardcodedTruckOps = (): any[] => {
+    const palSettings = DEFAULT_SETTINGS.PAL;
+    const { infrastructureTankMapping, customerMatrix } = palSettings;
+
+    const bayToValidPlans: Record<string, { customer: string, product: string, from: string }[]> = {};
+     const truckBays = Object.keys(palSettings.infrastructureModalityMapping || {})
+        .filter(infra => palSettings.infrastructureModalityMapping![infra] === 'truck')
+        .sort();
+    
+    truckBays.forEach(bay => {
+        bayToValidPlans[bay] = [];
+        const connectedTanks = infrastructureTankMapping![bay] || [];
+        customerMatrix.forEach(mapping => {
+            const validTanksForMapping = mapping.tanks.filter(tank => connectedTanks.includes(tank));
+            validTanksForMapping.forEach(tank => {
+                bayToValidPlans[bay].push({ customer: mapping.customer, product: mapping.product, from: tank });
+            });
+        });
     });
 
-    return {
-        id, terminal, modality, transportId, status: 'completed', eta: eta.toISOString(), completedTime: completedTime.toISOString(),
-        queuePriority: eta.getTime(), currentStatus: 'Completed',
-        activityHistory: generateHistoryFromSof([{ time: subHours(eta, 1).toISOString(), user: 'System', action: 'CREATE', details: 'Plan created' }], completedSof),
-        transferPlan: [{
-            infrastructureId: infraId,
-            transfers: [{
-                customer, product, from: tank, to: transportId, tonnes,
-                transferredTonnes: tonnes, direction: `Tank to ${modality.charAt(0).toUpperCase() + modality.slice(1)}`,
-                specialServices: [], sof: completedSof
-            }]
-        }],
-        cycleTimeData
-    } as Operation;
+    const ops = [
+        // Bay 1
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 4.5), duration: 1, state: 'Departed' },
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 3.25), duration: 0.75, state: 'Departed' },
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 2.25), duration: 1, state: 'Pumping Stopped' },
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 1), duration: 1, state: 'Pumping Started' },
+        { bay: 'Bay 1', eta: addMinutes(MOCK_CURRENT_TIME, 15), duration: 0.75, state: 'Arrived' },
+        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 1.5), duration: 1, state: 'Planned' },
+        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 2.75), duration: 1.25, state: 'Planned' },
+        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 4.25), duration: 0.75, state: 'Planned' },
+
+        // Bay 2 (Has hold from T+1h to T+3h)
+        { bay: 'Bay 2', eta: subHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Departed' },
+        { bay: 'Bay 2', eta: subHours(MOCK_CURRENT_TIME, 1.75), duration: 1, state: 'Pumping Started' },
+        { bay: 'Bay 2', eta: subMinutes(MOCK_CURRENT_TIME, 30), duration: 0.75, state: 'Arrived' },
+        { bay: 'Bay 2', eta: addHours(MOCK_CURRENT_TIME, 3.25), duration: 1, state: 'Planned' }, // After hold
+        { bay: 'Bay 2', eta: addHours(MOCK_CURRENT_TIME, 4.5), duration: 1, state: 'Planned' },
+
+        // Bay 3
+        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 5), duration: 1.25, state: 'Departed' },
+        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 3.5), duration: 1, state: 'Pumping Stopped' },
+        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 2.25), duration: 1, state: 'On Bay' },
+        { bay: 'Bay 3', eta: subMinutes(MOCK_CURRENT_TIME, 60), duration: 1, state: 'Ready / Approved' },
+        { bay: 'Bay 3', eta: addMinutes(MOCK_CURRENT_TIME, 30), duration: 0.75, state: 'Planned' },
+        { bay: 'Bay 3', eta: addHours(MOCK_CURRENT_TIME, 1.75), duration: 1, state: 'Planned' },
+        { bay: 'Bay 3', eta: addHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Planned' },
+        
+        // Bay 4 (Has hold from T+4h to T+5h)
+        { bay: 'Bay 4', eta: subHours(MOCK_CURRENT_TIME, 2.5), duration: 1, state: 'Pumping Started' },
+        { bay: 'Bay 4', eta: subHours(MOCK_CURRENT_TIME, 1.25), duration: 1, state: 'Directed to Bay' },
+        { bay: 'Bay 4', eta: addMinutes(MOCK_CURRENT_TIME, 0), duration: 1, state: 'Planned' },
+        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 1.25), duration: 1, state: 'Planned' },
+        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 2.5), duration: 1, state: 'Planned' },
+        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 5.25), duration: 1, state: 'Planned' }, // After hold
+
+        // ... and so on for other bays
+        { bay: 'Bay 5', eta: subHours(MOCK_CURRENT_TIME, 0.5), duration: 1, state: 'Arrived' },
+        { bay: 'Bay 6', eta: addMinutes(MOCK_CURRENT_TIME, 15), duration: 1, state: 'Planned' },
+        { bay: 'Bay 7', eta: subMinutes(MOCK_CURRENT_TIME, 15), duration: 1, state: 'Ready / Approved' },
+        { bay: 'Bay 8', eta: addHours(MOCK_CURRENT_TIME, 1), duration: 1, state: 'Planned' },
+        { bay: 'Bay 9', eta: addHours(MOCK_CURRENT_TIME, 2), duration: 1, state: 'Planned' },
+        { bay: 'Bay 10', eta: subHours(MOCK_CURRENT_TIME, 1.5), duration: 1, state: 'On Bay' },
+        
+        // NEW TRUCKS FOR RESCHEDULE PANEL
+        { bay: 'Bay 5', eta: addHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Planned', special: 'high-priority-reschedule' },
+        { bay: 'Bay 6', eta: subMinutes(MOCK_CURRENT_TIME, 15), duration: 1, state: 'Planned' },
+        { bay: 'Bay 7', eta: subMinutes(MOCK_CURRENT_TIME, 45), duration: 1, state: 'Planned', special: 'no-show' }, // Should be flagged as no-show
+    ];
+    
+    let planIndex = 0;
+    return ops.map((op, i) => {
+        const validPlansForBay = bayToValidPlans[op.bay];
+        if (!validPlansForBay || validPlansForBay.length === 0) return null;
+
+        const plan = validPlansForBay[planIndex % validPlansForBay.length];
+        planIndex++;
+
+        const company = TRUCK_COMPANIES[i % TRUCK_COMPANIES.length];
+        const companyAbbr = company.replace(/[^A-Z]/g, '').slice(0, 3);
+
+        return {
+            id: `hd-truck-${op.bay.replace(' ','')}-${i}${op.special ? `-${op.special}`:''}`,
+            orderNumber: `TRK-${3000 + i}`,
+            eta: op.eta.toISOString(),
+            durationHours: op.duration,
+            transportId: company,
+            licensePlate: `${companyAbbr}-${1000 + i}`,
+            driverName: DRIVER_NAMES[i % DRIVER_NAMES.length],
+            plan: plan,
+            infra: op.bay,
+            targetSofEvent: op.state,
+            special: op.special
+        };
+    }).filter(Boolean);
 };
 
 
 export const createMockOperations = (): Operation[] => {
-    const emptyVesselCommonSof: SOFItem[] = VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 }));
-    const emptyVesselCommoditySof: SOFItem[] = VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 }));
+    let operations: Operation[] = [];
     const emptyTruckSof: SOFItem[] = SOF_EVENTS_MODALITY['truck'].map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 }));
+    
+    // --- VESSEL OPERATIONS (3 Hardcoded Vessels, ALL ACTIVE) ---
 
-    const activeVesselSof: SOFItem[] = VESSEL_COMMON_EVENTS.map((event, i) => {
-        const isComplete = i < 5; // First 5 steps are complete: START PREPARATIONS -> GANGWAY DOWN
-        return {
-            event,
-            status: isComplete ? 'complete' : 'pending',
-            time: isComplete ? subMinutes(now, (5 - i) * 15).toISOString() : '', // Stagger times
-            user: isComplete ? 'Ops Lead' : '',
-            loop: 1
-        };
-    });
+    // Vessel 1: "MV Alpha" - Active, Wharf 1 (Pumping)
+    const vessel1_eta = subHours(MOCK_CURRENT_TIME, 5);
+    let vessel1: Operation = {
+        id: 'op-vessel-1', terminal: 'PAL', modality: 'vessel', status: 'planned', transportId: 'MV Alpha', eta: vessel1_eta.toISOString(), durationHours: 12, queuePriority: vessel1_eta.getTime(),
+        currentStatus: 'Scheduled', delay: { active: false }, orderNumber: 'ORD-54321', 
+        activityHistory: [{ time: subHours(vessel1_eta, 1).toISOString(), user: 'Planner', action: 'CREATE', details: 'New vessel operation plan created.' }],
+        documents: [],
+        sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
+        transferPlan: [
+            { infrastructureId: 'L12', transfers: [{ id: 'op-vessel-1-L12-0', customer: 'Apex Refining', product: 'Petro-Fuel 95', from: '2S', to: 'B45', tonnes: 8500, transferredTonnes: 0, slopsTransferredTonnes: 50, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [] }] },
+            { infrastructureId: 'L13', transfers: [{ id: 'op-vessel-1-L13-0', customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', from: '4P', to: 'A02', tonnes: 6000, transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [] }] },
+        ],
+        specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
+    };
+    const { updatedSof: commonSof1, lastTime: lastCommonTime1, activityLogs: commonLogs1 } = progressSofArray(vessel1.sof!, VESSEL_COMMON_EVENTS, 'GANGWAY DOWN', new Date(vessel1.eta), 'Ops Lead', 20);
+    vessel1.sof = commonSof1; vessel1.activityHistory.push(...commonLogs1);
+    const firstVesselTransfer1 = vessel1.transferPlan[0].transfers[0];
+    const { updatedSof: commoditySof1, lastTime: pumpStartTime1, activityLogs: commodityLogs1 } = progressSofArray(firstVesselTransfer1.sof!, VESSEL_COMMODITY_EVENTS, 'START PUMPING', lastCommonTime1, 'Operator 1', 10, ` for ${firstVesselTransfer1.product}`);
+    firstVesselTransfer1.sof = commoditySof1; vessel1.activityHistory.push(...commodityLogs1);
+    const vesselInitialTransferred1 = Math.min(firstVesselTransfer1.tonnes, ( (MOCK_CURRENT_TIME.getTime() - pumpStartTime1.getTime()) / 3600000) * 1200 );
+    firstVesselTransfer1.transferredTonnes = vesselInitialTransferred1;
+    const vessel1_new_statuses = deriveStatusFromSof(vessel1, true);
+    if(vessel1_new_statuses) vessel1 = {...vessel1, ...vessel1_new_statuses};
 
-    // Keep a few live operations for demonstration
-    let operations: Operation[] = [
-        // --- ACTIVE OPERATIONS (Increased Variety) ---
-        {
-            id: 'op-vessel-1', terminal: 'PAL', modality: 'vessel', status: 'active', transportId: 'MV Alpha', eta: subHours(now, 4).toISOString(), queuePriority: subHours(now, 4).getTime(),
-            currentStatus: 'Gangway Down', delay: { active: false }, orderNumber: 'ORD-54321', activityHistory: [],
-            sof: activeVesselSof,
-            transferPlan: [
-                { infrastructureId: 'L12', transfers: [
-                    { id: 'op-vessel-1-L12-0', customer: 'Apex Refining', product: 'Petro-Fuel 95', from: '2S', to: 'B45', tonnes: 8500, direction: 'Vessel to Tank', transferredTonnes: 0, specialServices: [], sof: emptyVesselCommoditySof },
-                    { id: 'op-vessel-1-L12-1', customer: 'GlobalChem Industries', product: 'Petro-Fuel 95', from: '4S', to: 'A01', tonnes: 2000, direction: 'Vessel to Tank', transferredTonnes: 0, specialServices: [], sof: emptyVesselCommoditySof }
-                ]},
-                { infrastructureId: 'L23', transfers: [ { id: 'op-vessel-1-L23-0', customer: 'Coastal Energy Supply', product: 'Diesel Max', from: '5P', to: 'C38', tonnes: 8000, direction: 'Vessel to Tank', transferredTonnes: 0, specialServices: [], sof: emptyVesselCommoditySof }] }
-        },
-        // --- NEW TRUCK VARIETY ---
-        { // Truck - Awaiting Gate Approval
-            id: 'op-truck-attention-1', terminal: 'PAL', modality: 'truck', status: 'active', transportId: 'QuickHaul', eta: subMinutes(now, 15).toISOString(), queuePriority: subMinutes(now, 15).getTime(),
-            currentStatus: 'Awaiting Approval', truckStatus: 'Registered', licensePlate: 'QH-551', driverName: 'Sarah Connor', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 3', transfers: [{ id: 'op-truck-attention-1-t1', customer: 'BulkTrans', product: 'ULP 98', from: 'A01', to: 'QuickHaul', tonnes: 32, direction: 'Tank to Truck', specialServices: [], sof: SOF_EVENTS_MODALITY['truck'].map((e, i) => ({ event: e, status: i < 1 ? 'complete' : 'pending', time: subMinutes(now, 15).toISOString(), user: 'AUTO', loop: 1 }))}] }],
-        },
-        { // Truck - Waiting > 15 mins (will trigger attention)
-            id: 'op-truck-attention-2', terminal: 'PAL', modality: 'truck', status: 'active', transportId: 'TerraTrans', eta: subMinutes(now, 20).toISOString(), queuePriority: subMinutes(now, 20).getTime(),
-            currentStatus: 'Waiting for Bay', truckStatus: 'Waiting', licensePlate: 'TT-820', driverName: 'Kyle Reese', 
-            activityHistory: [{ time: subMinutes(now, 18).toISOString(), user: 'Ops Lead', action: 'STATUS_UPDATE', details: 'Truck arrival accepted.' }],
-            transferPlan: [{ infrastructureId: 'Bay 2', transfers: [{ id: 'op-truck-attention-2-t1', customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', from: 'B47', to: 'TerraTrans', tonnes: 30, direction: 'Tank to Truck', specialServices: [], sof: SOF_EVENTS_MODALITY['truck'].map((e, i) => ({ event: e, status: i < 1 ? 'complete' : 'pending', time: subMinutes(now, 20).toISOString(), user: 'AUTO', loop: 1 }))}] }],
-        },
-        { // Truck - Pumping
-            id: 'op-truck-active-pumping', terminal: 'PAL', modality: 'truck', status: 'active', transportId: 'ChemEx', eta: subMinutes(now, 45).toISOString(), queuePriority: subMinutes(now, 45).getTime(),
-            // FIX: Removed 'transferredTonnes' from the top-level Operation object as it's not a valid property. It belongs in the Transfer object.
-            currentStatus: 'Pumping', truckStatus: 'Loading', licensePlate: 'CE-303', driverName: 'Ellen Ripley',
-            activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 1', transfers: [{ id: 'op-truck-active-pumping-t1', customer: 'GlobalChem Industries', product: 'Indu-Chem X7', from: 'E14', to: 'ChemEx', tonnes: 25, transferredTonnes: 15, direction: 'Tank to Truck', specialServices: [], sof: SOF_EVENTS_MODALITY['truck'].map((e, i) => ({ event: e, status: i < 4 ? 'complete' : 'pending', time: subMinutes(now, 45 - i*5).toISOString(), user: 'Operator 1', loop: 1 }))}] }],
-        },
-        { // Truck - On Bay
-            id: 'op-truck-on-bay', terminal: 'PAL', modality: 'truck', status: 'active', transportId: 'Logistics Inc', eta: subHours(now, 0.5).toISOString(), queuePriority: subHours(now, 0.5).getTime(),
-            currentStatus: 'On Bay', truckStatus: 'On Bay', orderNumber: 'ORD-9876', licensePlate: 'XYZ-123', driverName: 'Jane Smith', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 1', transfers: [{ id: 'op-truck-on-bay-t1', customer: 'Apex Refining', product: 'Diesel Max', from: 'C38', to: 'Logistics Inc', tonnes: 30, direction: 'Tank to Truck', specialServices: [], sof: SOF_EVENTS_MODALITY['truck'].map((e, i) => ({ event: e, status: i < 3 ? 'complete' : 'pending', time: subMinutes(now, 30 - i*2).toISOString(), user: 'Ops Lead', loop: 1 }))}] }],
-        },
-        // Original Active Ops
-        {
-            id: 'op-truck-2', terminal: 'PAL', modality: 'truck', status: 'active', transportId: 'Haulage Co', eta: subHours(now, 1).toISOString(), queuePriority: subHours(now, 1).getTime(),
-            currentStatus: 'Waiting', truckStatus: 'Waiting', orderNumber: 'ORD-5432', licensePlate: 'GHI-456', driverName: 'Mike Johnson', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 2', transfers: [{ id: 'op-truck-2-Bay 2-0', customer: 'Coastal Energy Supply', product: 'Diesel Max', from: 'C13', to: 'Haulage Co', tonnes: 28, direction: 'Tank to Truck', specialServices: [], sof: SOF_EVENTS_MODALITY['truck'].map((e, i) => ({ event: e, status: i < 1 ? 'complete' : 'pending', time: subMinutes(now, 60).toISOString(), user: 'AUTO', loop: 1 })) }]}]
-        },
-        {
-            id: 'op-rail-1', terminal: 'PAL', modality: 'rail', status: 'active', transportId: 'NRF 7891', eta: subHours(now, 2).toISOString(), queuePriority: subHours(now, 2).getTime(),
-            currentStatus: 'Pumping', orderNumber: 'RAIL-556', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Siding A', transfers: [{ id: 'op-rail-1-Siding A-0', customer: 'National Rail Freight', product: 'Ethanol', from: 'A02', to: 'NRF 7891', tonnes: 1500, transferredTonnes: 600, direction: 'Tank to Rail', specialServices: [], sof: SOF_EVENTS_MODALITY['rail'].map((e, i) => ({ event: e, status: i < 5 ? 'complete' : 'pending', time: subMinutes(now, 120 - i*15).toISOString(), user: 'Operator 1', loop: 1 })) }]}]
-        },
-        // --- PLANNED OPERATIONS ---
-        {
-            id: 'op-vessel-planned-1', terminal: 'PAL', modality: 'vessel', status: 'planned', transportId: 'MV Neptune', eta: addHours(now, 3).toISOString(), queuePriority: addHours(now, 3).getTime(),
-            currentStatus: 'Scheduled', orderNumber: 'ORD-V987', activityHistory: [], sof: emptyVesselCommonSof,
-            transferPlan: [{ infrastructureId: 'L14', transfers: [{ id: 'op-vessel-planned-1-t1', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '1P/S', to: 'J10', tonnes: 12000, direction: 'Vessel to Tank', specialServices: [], sof: emptyVesselCommoditySof }]}]
-        },
-        {
-            id: 'op-truck-planned-1', terminal: 'PAL', modality: 'truck', status: 'planned', transportId: 'BulkTrans', eta: addMinutes(now, 25).toISOString(), queuePriority: addMinutes(now, 25).getTime(),
-            currentStatus: 'Scheduled', licensePlate: 'BT-001', orderNumber: 'ORD-T101', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 1', transfers: [{ id: 'op-truck-planned-1-t1', customer: 'BulkTrans', product: 'ULP 98', from: 'A01', to: 'BulkTrans', tonnes: 35, direction: 'Tank to Truck', specialServices: [], sof: emptyTruckSof }]}]
-        },
-        {
-            id: 'op-truck-planned-2', terminal: 'PAL', modality: 'truck', status: 'planned', transportId: 'Apex Logistics', eta: addHours(now, 1.5).toISOString(), queuePriority: addHours(now, 1.5).getTime(),
-            currentStatus: 'Scheduled', licensePlate: 'APX-789', orderNumber: 'ORD-T102', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 3', transfers: [{ id: 'op-truck-planned-2-t1', customer: 'Apex Refining', product: 'Petro-Fuel 95', from: 'B46', to: 'Apex Logistics', tonnes: 33, direction: 'Tank to Truck', specialServices: [], sof: emptyTruckSof }]}]
-        },
-        {
-            id: 'op-truck-planned-3', terminal: 'PAL', modality: 'truck', status: 'planned', transportId: 'Riverton Haul', eta: addHours(now, 4).toISOString(), queuePriority: addHours(now, 4).getTime(),
-            currentStatus: 'Scheduled', licensePlate: 'RIV-440', orderNumber: 'ORD-T103', activityHistory: [],
-            transferPlan: [{ infrastructureId: 'Bay 1', transfers: [{ id: 'op-truck-planned-3-t1', customer: 'Riverton Chemicals', product: 'Caustic Soda', from: 'E14', to: 'Riverton Haul', tonnes: 20, direction: 'Tank to Truck', specialServices: [], sof: emptyTruckSof }]}]
-        },
-    ];
+    // Vessel 2: "MV Titan" - Active, Wharf 2 (Pumping) - WITH 10 VALID TRANSFERS
+    const vessel2_eta = subHours(MOCK_CURRENT_TIME, 4);
+    let vessel2: Operation = {
+        id: 'op-vessel-2', terminal: 'PAL', modality: 'vessel', status: 'planned', transportId: 'MV Titan', eta: vessel2_eta.toISOString(), durationHours: 18, queuePriority: vessel2_eta.getTime(),
+        currentStatus: 'Scheduled', delay: { active: false }, orderNumber: 'ORD-54322',
+        activityHistory: [{ time: subHours(vessel2_eta, 2).toISOString(), user: 'Planner', action: 'CREATE', details: 'New vessel operation plan created.' }],
+        documents: [],
+        sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
+        transferPlan: [
+            { infrastructureId: 'L14', transfers: [
+                { id: 'op-vessel-2-L14-0', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '1P', to: 'J10', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [],
+                  preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })) // Incompatible with Agri-Oil Prime
+                },
+                { id: 'op-vessel-2-L14-1', customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', from: '2P', to: 'B47', tonnes: 4000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L14-2', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '3P', to: 'J11', tonnes: 5000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [],
+                  preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })) // Incompatible with Agri-Oil Prime
+                }
+            ]},
+            { infrastructureId: 'L23', transfers: [
+                { id: 'op-vessel-2-L23-0', customer: 'Coastal Energy Supply', product: 'Diesel Max', from: '1S', to: 'C13', tonnes: 2500, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L23-1', customer: 'National Rail Freight', product: 'Diesel Max', from: '2S', to: 'C38', tonnes: 8000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L23-2', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '3S', to: 'D05', tonnes: 10000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
+            ]},
+            { infrastructureId: 'L24', transfers: [
+                { id: 'op-vessel-2-L24-0', customer: 'Apex Refining', product: 'Diesel Max', from: '4S', to: 'C38', tonnes: 5000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
+            ]},
+            { infrastructureId: 'L25', transfers: [
+                { id: 'op-vessel-2-L25-0', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '4P', to: 'J10', tonnes: 500, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L25-1', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '5P', to: 'J11', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L25-2', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '5S', to: 'D05', tonnes: 4000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
+            ]},
+        ],
+        specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
+    };
+    const { updatedSof: commonSof2, lastTime: lastCommonTime2, activityLogs: commonLogs2 } = progressSofArray(vessel2.sof!, VESSEL_COMMON_EVENTS, 'SURVEYOR ONBOARD', new Date(vessel2.eta), 'Ops Lead', 15);
+    vessel2.sof = commonSof2; vessel2.activityHistory.push(...commonLogs2);
+    const firstCompatibleTransfer = vessel2.transferPlan[1].transfers[0];
+    const { updatedSof: commoditySof2, lastTime: pumpStartTime2, activityLogs: commodityLogs2 } = progressSofArray(firstCompatibleTransfer.sof!, VESSEL_COMMODITY_EVENTS, 'START PUMPING', lastCommonTime2, 'Operator 2', 8, ` for ${firstCompatibleTransfer.product}`);
+    firstCompatibleTransfer.sof = commoditySof2; vessel2.activityHistory.push(...commodityLogs2);
+    const vesselInitialTransferred2 = Math.min(firstCompatibleTransfer.tonnes, ( (MOCK_CURRENT_TIME.getTime() - pumpStartTime2.getTime()) / 3600000) * 1100 );
+    firstCompatibleTransfer.transferredTonnes = vesselInitialTransferred2;
+    const vessel2_new_statuses = deriveStatusFromSof(vessel2, true);
+    if(vessel2_new_statuses) vessel2 = {...vessel2, ...vessel2_new_statuses};
 
-    // --- GENERATE HISTORICAL DATA ---
-    const historicalOps: Operation[] = [];
-    // Add one completed truck for today
-    historicalOps.push(createCompletedOp('op-truck-completed-today', 'truck', 'PAL', 'JetFuel Express', subHours(now, 2), 'Aviation Fuels Inc', 'Jet A-1', 22, 'Bay 4', 'J10'));
 
-    const NUM_HISTORICAL_OPS = 400;
+    // Vessel 3: "Maritime Grace" - Active, Wharf 3 (Waiting for Surveyor)
+    const vessel3_eta = subHours(MOCK_CURRENT_TIME, 2);
+    let vessel3: Operation = {
+        id: 'op-vessel-3', terminal: 'PAL', modality: 'vessel', status: 'planned', transportId: 'Maritime Grace', eta: vessel3_eta.toISOString(), durationHours: 16, queuePriority: vessel3_eta.getTime(),
+        currentStatus: 'Scheduled', delay: { active: false }, orderNumber: 'ORD-54323',
+        activityHistory: [{ time: subHours(vessel3_eta, 4).toISOString(), user: 'Planner', action: 'CREATE', details: 'New vessel operation plan created.' }],
+        documents: [],
+        sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
+        transferPlan: [
+            { infrastructureId: 'L34', transfers: [
+                { id: 'op-vessel-3-L34-0', customer: 'GlobalChem Industries', product: 'Methanol', from: '3P', to: 'E15', tonnes: 4000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+            ]},
+            { infrastructureId: 'L31', transfers: [
+                { id: 'op-vessel-3-L31-0', customer: 'Apex Refining', product: 'ULP 98', from: '2S', to: 'A01', tonnes: 10000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+            ]},
+        ],
+        specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
+    };
+    const { updatedSof: commonSof3, activityLogs: commonLogs3 } = progressSofArray(vessel3.sof!, VESSEL_COMMON_EVENTS, 'VESSEL ALONGSIDE', new Date(vessel3.eta), 'Ops Lead', 25);
+    vessel3.sof = commonSof3; vessel3.activityHistory.push(...commonLogs3);
+    const vessel3_new_statuses = deriveStatusFromSof(vessel3, true);
+    if(vessel3_new_statuses) vessel3 = {...vessel3, ...vessel3_new_statuses};
 
-    for (let i = 0; i < NUM_HISTORICAL_OPS; i++) {
-        const completedDaysAgo = Math.floor(Math.random() * 540) + 1; // Last 18 months
-        const completedTime = subDays(now, completedDaysAgo);
+    operations.push(vessel1, vessel2, vessel3);
+
+    // --- RAIL OPERATION ---
+    let railOp: Operation = {
+        id: 'op-rail-1', terminal: 'PAL', modality: 'rail', status: 'planned', transportId: 'NRF 7891', eta: subHours(MOCK_CURRENT_TIME, 2).toISOString(), durationHours: 3, queuePriority: subHours(MOCK_CURRENT_TIME, 2).getTime(),
+        currentStatus: 'Scheduled', orderNumber: 'RAIL-556',
+        activityHistory: [{ time: subHours(MOCK_CURRENT_TIME, 3).toISOString(), user: 'Planner', action: 'CREATE', details: 'New rail operation plan created.' }],
+        transferPlan: [{ infrastructureId: 'Siding B', transfers: [{ id: 'op-rail-1-Siding B-0', customer: 'National Rail Freight', product: 'Diesel Max', from: 'C38', to: 'NRF 7891', tonnes: 1500, transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Tank to Rail', specialServices: [], sof: SOF_EVENTS_MODALITY['rail'].map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [] }] }],
+        delay: { active: false }, specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
+    };
+    const railTransfer = railOp.transferPlan[0].transfers[0];
+    const { updatedSof: railSof, activityLogs: railLogs, lastTime: railPumpStartTime } = progressSofArray(railTransfer.sof!, SOF_EVENTS_MODALITY['rail'], 'Pumping Started', new Date(railOp.eta), 'Operator 1', 15, ` for ${railTransfer.product}`);
+    railTransfer.sof = railSof; railOp.activityHistory.push(...railLogs);
+    const railInitialTransferred = Math.min(railTransfer.tonnes, ( (MOCK_CURRENT_TIME.getTime() - railPumpStartTime.getTime()) / 3600000) * 300);
+    railTransfer.transferredTonnes = railInitialTransferred;
+    const rail_new_statuses = deriveStatusFromSof(railOp, true);
+    if(rail_new_statuses) railOp = {...railOp, ...rail_new_statuses};
+    operations.push(railOp);
+    
+    // --- NEW SATURATED TRUCK OPERATIONS ---
+    const truckOps = getHardcodedTruckOps();
+
+    const preloadedTrucks = truckOps.map((baseOp, i) => {
+        const plan = baseOp.plan;
         
-        const terminalId = (['PAL', 'PAL', 'PAL', 'CBY', 'RVE'] as const)[Math.floor(Math.random() * 5)];
-        const terminalData = TERMINAL_MASTER_DATA[terminalId];
-        if (!terminalData) continue;
-
-        const modality = (['truck', 'truck', 'truck', 'truck', 'vessel', 'rail'] as const)[Math.floor(Math.random() * 6)];
-
-        const validInfra = Object.keys(terminalData.infrastructureModalityMapping || {}).filter(
-            id => (terminalData.infrastructureModalityMapping as Record<string, Modality>)[id] === modality
-        );
-        if (validInfra.length === 0) continue;
-        const infraId = validInfra[Math.floor(Math.random() * validInfra.length)];
-
-        const validMappings = (terminalData.customerMatrix || []).filter(m => {
-            const tanks = (terminalData.infrastructureTankMapping as Record<string, string[]>)?.[infraId] || [];
-            return m.tanks.some(t => tanks.includes(t));
-        });
-        if (validMappings.length === 0) continue;
-        const mapping = validMappings[Math.floor(Math.random() * validMappings.length)];
+        let op: Operation = {
+            id: baseOp.id,
+            orderNumber: baseOp.orderNumber,
+            eta: baseOp.eta,
+            transportId: baseOp.transportId,
+            licensePlate: baseOp.licensePlate,
+            driverName: baseOp.driverName,
+            terminal: 'PAL',
+            modality: 'truck',
+            durationHours: baseOp.durationHours,
+            queuePriority: new Date(baseOp.eta).getTime(),
+            delay: { active: false },
+            arrivalChecklist: {
+                tiresOk: 'pending',
+                leaksOk: 'pending',
+                hosesOk: 'pending',
+                safetySealsOk: 'pending',
+                bolReceived: 'pending',
+                coaReceived: 'pending',
+                driverLicenseOk: 'pending',
+            },
+            transferPlan: [{
+                infrastructureId: baseOp.infra,
+                transfers: [{
+                    id: `transfer-${baseOp.id}`,
+                    customer: plan.customer,
+                    product: plan.product,
+                    from: plan.from,
+                    to: baseOp.transportId,
+                    tonnes: 25 + (i % 5),
+                    direction: 'Tank to Truck',
+                    specialServices: [],
+                    sof: JSON.parse(JSON.stringify(emptyTruckSof)),
+                    transferredTonnes: 0,
+                    slopsTransferredTonnes: 0,
+                    transferLog: []
+                }]
+            }],
+            activityHistory: [{ time: subMinutes(new Date(baseOp.eta), 20).toISOString(), user: 'Planner', action: 'CREATE', details: 'New truck op created.' }],
+            status: 'planned',
+            currentStatus: 'Scheduled',
+            truckStatus: 'Planned'
+        } as any; // Cast to allow building up the object
         
-        const validTanks = mapping.tanks.filter(t => 
-            ((terminalData.infrastructureTankMapping as Record<string, string[]>)?.[infraId] || []).includes(t)
-        );
-        if(validTanks.length === 0) continue;
-        const tank = validTanks[Math.floor(Math.random() * validTanks.length)];
+        const etaDate = new Date(op.eta);
+        const targetSofEvent = baseOp.targetSofEvent;
 
-        const transportId = `${modality.slice(0,1).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
-        const tonnes = modality === 'vessel' ? 5000 + Math.random() * 15000 : modality === 'rail' ? 800 + Math.random() * 1200 : 25 + Math.random() * 10;
+        if (targetSofEvent && targetSofEvent !== 'Planned') {
+            const transfer = op.transferPlan[0].transfers[0];
+            const { updatedSof, activityLogs, lastTime } = progressSofArray(transfer.sof!, SOF_EVENTS_MODALITY.truck, targetSofEvent, etaDate, i % 2 === 0 ? 'Operator 1' : 'Dispatch');
+            transfer.sof = updatedSof;
+            op.activityHistory.push(...activityLogs);
 
-        const newOp = createCompletedOp(`op-comp-${i}`, modality, terminalId, transportId, completedTime, mapping.customer, mapping.product, Math.round(tonnes), infraId, tank);
-        
-        // Sprinkle in some delays and cancellations
-        if (i % 20 === 0) {
-            newOp.status = 'cancelled';
-            newOp.completedTime = undefined;
-            // FIX: Convert `newOp.eta` string to a Date object for `subHours`.
-            newOp.cancellationDetails = { time: subHours(new Date(newOp.eta), 1).toISOString(), user: 'AUTO', reason: 'Customer Request' };
-        } else if (i % 15 === 0) {
-            newOp.delay = { active: true, reason: 'Equipment Failure', time: subHours(completedTime, 2).toISOString() };
+            // If arrived, complete the checklist for realism
+            if (targetSofEvent !== 'Arrived' && targetSofEvent !== 'Planned') {
+                op.arrivalChecklist = {
+                    tiresOk: 'complete', leaksOk: 'complete', hosesOk: 'complete', safetySealsOk: 'complete',
+                    bolReceived: 'complete', coaReceived: 'complete', driverLicenseOk: 'complete'
+                };
+            }
+
+            if (targetSofEvent === 'Pumping Started') {
+                const durationHours = (MOCK_CURRENT_TIME.getTime() - lastTime.getTime()) / 3600000;
+                let transferred = durationHours * 100; // Rate: 100 T/hr
+                
+                if (transferred >= transfer.tonnes) transferred = transfer.tonnes * 0.99; // Don't auto-complete
+                transfer.transferredTonnes = transferred;
+            } else if (['Pumping Stopped', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Departed'].includes(targetSofEvent)) {
+                transfer.transferredTonnes = transfer.tonnes;
+            } else {
+                transfer.transferredTonnes = 0;
+            }
+            
+            if (targetSofEvent === 'Departed') {
+                op.completedTime = lastTime.toISOString();
+                op = calculateAndSetCycleTime(op);
+            }
         }
         
-        historicalOps.push(newOp);
-    }
+        if (baseOp.special === 'high-priority-reschedule') {
+            op.currentStatus = 'Reschedule Required';
+            op.truckStatus = 'Rejected';
+            op.requeueDetails = {
+                reason: 'Documentation Issue',
+                user: 'Dispatch',
+                time: subMinutes(MOCK_CURRENT_TIME, 15).toISOString(),
+                details: { notes: 'BOL does not match order.' },
+                priority: 'high'
+            };
+            op.status = 'planned';
+        } else if (baseOp.special === 'no-show') {
+            const flagTime = MOCK_CURRENT_TIME.toISOString();
+            op.currentStatus = 'No Show';
+            op.requeueDetails = {
+                reason: 'No Show',
+                user: 'System',
+                time: flagTime,
+                details: {},
+                priority: 'normal'
+            };
+            op.status = 'planned';
+            const newLog: ActivityLogItem = { time: flagTime, user: 'System', action: 'REQUEUE', details: `Automatically flagged as No Show. Reason: Truck did not arrive within 30 minutes of ETA.` };
+            op.activityHistory.push(newLog);
+        } else {
+            const derivedStatus = deriveStatusFromSof(op, true);
+            if (derivedStatus) {
+                op = { ...op, ...derivedStatus };
+            }
+        }
+        
+        return op;
+    });
 
-    operations.push(...historicalOps);
-    
-    // Add empty fields to all operations to ensure type consistency
-    operations = operations.map(op => ({
+    operations.push(...preloadedTrucks);
+
+    // Final cleanup to ensure all ops have required fields
+    operations = operations.map((op, i) => ({
+        ...op,
+        id: op.id || `op-fallback-${i}`,
+        delay: op.delay || { active: false },
+        activityHistory: op.activityHistory || [],
+        documents: op.documents || [],
         lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [],
-        specialRequirements: [], handOvers: [], hoseLog: [], observationLog: [],
-        dipSheetData: [], ...op
+        specialRequirements: op.specialRequirements || [],
+        handOvers: op.handOvers || [],
+        hoseLog: op.hoseLog || [],
+        observationLog: op.observationLog || [],
+        dipSheetData: op.dipSheetData || [],
+        queuePriority: op.queuePriority || 0,
+        sampleLog: op.sampleLog || [],
+        pressureCheckLog: op.pressureCheckLog || [],
     }));
 
     return operations;
 };
-
-
-export const MOCK_OPERATIONS = createMockOperations();

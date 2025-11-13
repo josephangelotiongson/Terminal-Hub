@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+
+import React, { useState, useEffect, useRef, useContext } from 'react';
 import Modal from './Modal';
+import { AppContext } from '../context/AppContext';
 
 interface HoseLogModalProps {
     isOpen: boolean;
@@ -9,6 +11,7 @@ interface HoseLogModalProps {
 }
 
 const HoseLogModal: React.FC<HoseLogModalProps> = ({ isOpen, onClose, onSave, product }) => {
+    const { simulatedTime } = useContext(AppContext)!;
     const [hoseNumber, setHoseNumber] = useState('');
     const [testDate, setTestDate] = useState('');
     const [pressureTestPassed, setPressureTestPassed] = useState<'Y' | 'N' | ''>('');
@@ -20,11 +23,11 @@ const HoseLogModal: React.FC<HoseLogModalProps> = ({ isOpen, onClose, onSave, pr
         if (isOpen) {
             // Reset form on open and set defaults for "less clicks"
             setHoseNumber('');
-            setTestDate(new Date().toISOString().split('T')[0]); // Default to today
+            setTestDate(simulatedTime.toISOString().split('T')[0]); // Default to current simulated day
             setPressureTestPassed('Y'); // Default to Yes
             setNewGasketUsed('Y'); // Default to Yes
         }
-    }, [isOpen]);
+    }, [isOpen, simulatedTime]);
 
     useEffect(() => {
         if (isOpen && canvasRef.current) {

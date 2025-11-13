@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, Transfer, VesselCommonTimestamps, CommodityTimestamps } from '../types';
@@ -8,6 +9,7 @@ const TimeInputRow: React.FC<{
     value?: string;
     onValueChange: (newValue: string) => void;
 }> = ({ label, value, onValueChange }) => {
+    const { simulatedTime } = useContext(AppContext)!;
     const [datePart, setDatePart] = useState('');
     const [timePart, setTimePart] = useState('');
 
@@ -29,7 +31,7 @@ const TimeInputRow: React.FC<{
     };
 
     const handleStampNow = () => {
-        onValueChange(new Date().toISOString());
+        onValueChange(simulatedTime.toISOString());
     };
     
     const timeOptions = useMemo(() => {

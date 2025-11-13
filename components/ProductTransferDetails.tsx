@@ -1,14 +1,16 @@
+
+
 import React, { useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppContext } from '../context/AppContext';
-import { SOFItem, SpecialServiceData, Transfer, Operation, DipSheetEntry, ActivityLogItem, ScadaData } from '../types';
-import TankLevelIndicator from './TankLevelIndicator';
-import { formatInfraName, interpolate } from '../utils/helpers';
+import { SOFItem, SpecialServiceData, Transfer, Operation, DipSheetEntry, ActivityLogItem, ScadaData, HoseLogEntry, SampleLogEntry, PressureCheckLogEntry } from '../types';
+import { formatInfraName, interpolate, canPerformSofAction } from '../utils/helpers';
 import Modal from './Modal';
 import SignatureModal from './SignatureModal';
 import UndoSofModal from './UndoSofModal';
 import HoseLogModal from './HoseLogModal';
 import SampleLogModal from './SampleLogModal';
 import SofDetailsModal from './SofDetailsModal';
+import PressureCheckModal from './PressureCheckModal';
 
 // --- NEW SLIDER COMPONENT ---
 const SofSlider: React.FC<{
@@ -32,7 +34,7 @@ const SofSlider: React.FC<{
                 return e.touches[0].clientX;
             }
             if (e.changedTouches.length > 0) {
-                return e.changedTouches[0].clientX;
+                return e.changedTouches[0].clientY;
             }
         }
         return 0;
@@ -155,81 +157,247 @@ const SofSlider: React.FC<{
     );
 };
 
+const SofSection: React.FC<{
+    sofItems: SOFItem[];
+    onSofClick: (eventName: string, loop: number) => void;
+    activeStepEvent: string | null;
+    onDisabledClick: (item: SOFItem, index: number, items: SOFItem[]) => void;
+    onUndoClick: (item: SOFItem) => void;
+    onEditClick: (item: SOFItem) => void;
+    optimisticUndoEvent: string | null;
+    pendingCompletionEvent: string | null;
+    setInfoModal: React.Dispatch<React.SetStateAction<{ isOpen: boolean; title: string; message: string; }>>;
+}> = ({ sofItems, onSofClick, activeStepEvent, onDisabledClick, onUndoClick, onEditClick, optimisticUndoEvent, pendingCompletionEvent, setInfoModal }) => {
+    const { currentUser, editingOp: plan } = useContext(AppContext)!;
+    
+    return (
+        <div className="grid grid-cols-1 gap-1">
+            {sofItems.map((sofItem, index) => {
+                let status = sofItem.status;
+                if (optimisticUndoEvent === sofItem.event && status === 'complete') {
+                    status = 'in-progress';
+                } else if (status === 'pending' && sofItem.event === activeStepEvent) {
+                    status = 'in-progress';
+                } else if (pendingCompletionEvent === sofItem.event) {
+                    status = 'complete'; // Visually complete while pending user input in modal
+                }
+
+                const hasPermission = canPerformSofAction(currentUser, plan!.modality, sofItem.event);
+
+                return (
+                    <div 
+                        key={sofItem.event} 
+                        className={`sof-item ${status}`}
+                        onClick={() => {
+                            if (status === 'pending') {
+                                onDisabledClick(sofItem, index, sofItems); 
+                            } else if (status !== 'complete' && !hasPermission) {
+                                setInfoModal({isOpen: true, title: "Permission Denied", message: "Your role does not have permission to perform this action."});
+                            }
+                        }}
+                    >
+                        {status === 'pending' || (status !== 'complete' && !hasPermission) ? (
+                            <div className={`sof-icon`} title={!hasPermission ? "Permission Denied" : ""}>
+                                <i className={`fas ${!hasPermission && status !== 'pending' ? 'fa-lock' : 'fa-clock'}`}></i>
+                            </div>
+                        ) : (
+                            <SofSlider
+                                status={status as 'in-progress' | 'complete'}
+                                onComplete={() => onSofClick(sofItem.event, sofItem.loop)}
+                                onUndo={() => onUndoClick(sofItem)}
+                            />
+                        )}
+                        
+                        <div className="flex-1">
+                            <h5 className="font-semibold text-sm">{sofItem.event}</h5>
+                            <p className="text-xs text-text-tertiary">{sofItem.status === 'complete' ? `${new Date(sofItem.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} | ${sofItem.user}` : 'Pending'}</p>
+                        </div>
+                        {sofItem.status === 'complete' && (
+                            <button onClick={(e) => { e.stopPropagation(); onEditClick(sofItem); }} className="sof-edit-btn">
+                                <i className="fas fa-pen mr-2"></i> Edit
+                            </button>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
 const isPreviousStepComplete = (sofItems: SOFItem[], currentIndex: number): boolean => {
     if (currentIndex === 0) return true;
     const previousItem = sofItems[currentIndex - 1];
     return previousItem?.status === 'complete';
 };
 
-const ProductTransferDetails: React.FC = () => {
+interface ProductTransferDetailsProps {
+    lineIndex?: number;
+    transferIndex?: number;
+    setActiveTab?: (tab: 'sof' | 'lineCleaning' | 'requirements' | 'shippingLog' | 'documents' | 'services' | 'auditLog' | 'arrivalChecklist') => void;
+}
+
+const CompactTankIndicator: React.FC<{ tankName: string; transferVolume: number; transferDirection: 'in' | 'out' }> = ({ tankName, transferVolume, transferDirection }) => {
+    const { tanks, switchView } = useContext(AppContext)!;
+    const tankData = tanks?.[tankName];
+
+    if (!tankData) return null;
+
+    const { capacity, current } = tankData;
+    const safeFillCapacity = capacity * 0.98;
+    const finalVolume = transferDirection === 'in' ? current + transferVolume : current - transferVolume;
+    const isOverfill = finalVolume > safeFillCapacity;
+    const isNegative = finalVolume < 0;
+
+    const toPercent = (val: number) => (capacity > 0 ? (val / capacity) * 100 : 0);
+
+    const currentPct = toPercent(current);
+    const transferPct = toPercent(transferVolume);
+
+    return (
+        <div className={`p-2 border rounded-lg flex items-center gap-3 text-xs ${isOverfill || isNegative ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+            <button onClick={() => switchView('tank-status-details', null, null, null, undefined, tankName)} className="font-bold text-slate-700 hover:text-brand-primary hover:underline">Tank: {tankName}</button>
+            <div className="font-mono text-slate-500 w-20 text-right">
+                {current.toLocaleString(undefined, { maximumFractionDigits: 0 })} T
+            </div>
+            <div className="flex-grow h-3 bg-slate-200 rounded-full relative overflow-hidden" title={`Current: ${currentPct.toFixed(1)}% | Transfer: ${transferPct.toFixed(1)}%`}>
+                {/* Current Volume */}
+                <div className="absolute top-0 bottom-0 h-full bg-slate-400" style={{ width: `${currentPct}%` }} />
+                {/* Transfer Volume */}
+                {transferDirection === 'in' ? (
+                    <div className={`absolute top-0 bottom-0 h-full ${isOverfill ? 'bg-red-500' : 'bg-green-500'}`} style={{ left: `${currentPct}%`, width: `${transferPct}%` }} />
+                ) : (
+                    <div className="absolute top-0 bottom-0 h-full" style={{ background: 'repeating-linear-gradient(-45deg,#cbd5e1,#cbd5e1 4px,#e2e8f0 4px,#e2e8f0 8px)', left: `${toPercent(finalVolume)}%`, width: `${transferPct}%` }} />
+                )}
+                 {/* Safe Fill Line */}
+                <div className="absolute top-0 h-full border-r-2 border-dashed border-red-500" style={{ left: '98%' }} title={`Safe Fill: ${safeFillCapacity.toLocaleString()} T`}></div>
+            </div>
+            <div className="font-mono text-slate-500 w-20 text-left">
+                &rarr; {finalVolume.toLocaleString(undefined, { maximumFractionDigits: 0 })} T
+            </div>
+            {(isOverfill || isNegative) && (
+                 <div className="text-xs font-bold text-red-600 animate-pulse flex-shrink-0">
+                    <i className="fas fa-exclamation-triangle mr-1"></i>
+                    {isOverfill ? 'OVERFILL' : 'NEGATIVE'}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const ProductTransferDetails: React.FC<ProductTransferDetailsProps> = ({ lineIndex: lineIndexProp, transferIndex: transferIndexProp, setActiveTab }) => {
     const context = useContext(AppContext);
     if (!context) return <div>Loading...</div>;
 
-    const { activeOpId, activeLineIndex, activeTransferIndex, currentUser, switchView, editingOp: plan, setEditingOp: setPlan, currentTerminalSettings, scadaData, saveCurrentPlan } = context;
+    const { activeLineIndex, activeTransferIndex, currentUser, editingOp: plan, setEditingOp: setPlan, currentTerminalSettings, scadaData, saveCurrentPlan, getOperationById, directTruckToBay, revertCallOff, simulatedTime } = context;
+    
+    const lineIndex = lineIndexProp ?? activeLineIndex;
+    const transferIndex = transferIndexProp ?? activeTransferIndex;
+
+    const [activeTabInternal, setActiveTabInternal] = useState<'sof' | 'services'>('sof');
 
     const transfer = useMemo(() => {
-        if (!plan || activeLineIndex === null || activeTransferIndex === null) return null;
-        return plan.transferPlan[activeLineIndex]?.transfers[activeTransferIndex];
-    }, [plan, activeLineIndex, activeTransferIndex]);
+        if (!plan || lineIndex === null || transferIndex === null) return null;
+        return plan.transferPlan[lineIndex]?.transfers[transferIndex];
+    }, [plan, lineIndex, transferIndex]);
 
     const [infoModal, setInfoModal] = useState({ isOpen: false, title: '', message: '' });
-    const [activeTab, setActiveTab] = useState('sof');
-    const [undoModalState, setUndoModalState] = useState<{ isOpen: boolean, item: SOFItem | null }>({ isOpen: false, item: null });
-    const [isScadaSidebarCollapsed, setIsScadaSidebarCollapsed] = useState(true);
+    const [undoModalState, setUndoModalState] = useState<{ isOpen: boolean; item: SOFItem | null, type: 'commodity' | 'cleaning' }>({ isOpen: false, item: null, type: 'commodity' });
     const [editingSof, setEditingSof] = useState<SOFItem | null>(null);
     const [optimisticUndoEvent, setOptimisticUndoEvent] = useState<string | null>(null);
+    const [pendingCompletionEvent, setPendingCompletionEvent] = useState<string | null>(null);
 
     // Modals for SOF step actions
     const [isHoseLogModalOpen, setIsHoseLogModalOpen] = useState(false);
     const [isSampleLogModalOpen, setIsSampleLogModalOpen] = useState(false);
+    const [isPressureCheckModalOpen, setIsPressureCheckModalOpen] = useState(false);
     
-    const [dipSheetEntry, setDipSheetEntry] = useState<{ id: string, dipReading: string, initials: string }>({ id: '', dipReading: '', initials: '' });
-
-    const ScadaDataSidebar: React.FC<{ isCollapsed: boolean; onToggle: () => void; }> = ({ isCollapsed, onToggle }) => {
-        const activeLines = Object.entries(scadaData).filter(([_, data]) => (data as ScadaData[string]).pumpStatus === 'ON');
-        return (
-            <div className={`fixed bottom-6 right-6 z-[80] transition-all duration-300 ${isCollapsed ? 'w-16 h-16' : 'w-72'}`}>
-                <div className="card shadow-2xl overflow-hidden">
-                    <div className="p-2 bg-slate-800 text-white flex justify-between items-center cursor-pointer" onClick={onToggle}>
-                        <h4 className="font-bold text-sm">
-                            {isCollapsed ? <i className="fas fa-tachometer-alt p-2"></i> : 'Live SCADA Data'}
-                        </h4>
-                        <i className={`fas ${isCollapsed ? 'fa-expand-alt' : 'fa-compress-alt'}`}></i>
-                    </div>
-                    {!isCollapsed && (
-                        <div className="p-3 bg-white max-h-80 overflow-y-auto">
-                            {activeLines.length > 0 ? activeLines.map(([lineId, data]) => {
-                                const scadaPoint = data as ScadaData[string];
-                                return (
-                                <div key={lineId} className="mb-3 p-2 bg-slate-50 rounded">
-                                    <p className="font-bold text-sm">{formatInfraName(lineId)}</p>
-                                    <div className="grid grid-cols-2 gap-1 text-xs">
-                                        <p>Flow: <strong>{scadaPoint.flowRate.toFixed(1)} m³/hr</strong></p>
-                                        <p>Pump: <strong className="text-green-600">{scadaPoint.pumpStatus}</strong></p>
-                                        <p>Temp: <strong>{scadaPoint.temperature.toFixed(1)} °C</strong></p>
-                                        <p>Pressure: <strong>{scadaPoint.pressure.toFixed(2)} kPa</strong></p>
-                                    </div>
-                                </div>
-                            )}) : <p className="text-sm text-center text-slate-500 italic p-4">No lines are actively pumping.</p>}
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    };
-
-    if (!plan || !transfer || activeLineIndex === null || activeTransferIndex === null) {
+    if (!plan || !transfer || lineIndex === null || transferIndex === null) {
         return <div className="text-center p-8"><h2 className="text-xl font-semibold">Transfer Not Found</h2><p>Please go back and select a transfer to view its details.</p></div>;
     }
-    
-    const completeSofStep = (eventName: string, loop: number) => {
-        if (!plan) return;
+
+    const forceSyncPlan = () => {
+        if (plan?.id) {
+            const masterOp = getOperationById(plan.id);
+            // Deep copy from masterOp to ensure we have a mutable copy for editing, breaking reference
+            if (masterOp && JSON.stringify(masterOp) !== JSON.stringify(plan)) {
+                setPlan(JSON.parse(JSON.stringify(masterOp)));
+            }
+        }
+    };
+
+    const handleHoseLogClose = () => {
+        setIsHoseLogModalOpen(false);
+        forceSyncPlan();
+    };
+
+    const handlePressureCheckClose = () => {
+        setIsPressureCheckModalOpen(false);
+        forceSyncPlan();
+    };
+
+    const handleSampleLogClose = () => {
+        setIsSampleLogModalOpen(false);
+        forceSyncPlan();
+    };
+
+    const handleSofClick = (eventName: string, loop: number) => {
+        const baseEvent = eventName.replace(/^(Rework #\d+: )?/, '');
+
+        if (baseEvent === 'Ready / Approved') {
+            const checklist = plan.arrivalChecklist;
+            const isChecklistComplete = checklist && Object.values(checklist).every(status => status === 'complete');
+            
+            if (!isChecklistComplete) {
+                setInfoModal({
+                    isOpen: true,
+                    title: 'Checklist Incomplete',
+                    message: 'The Arrival Checklist must be fully completed before this truck can be approved. Please go to the Arrival Checklist tab.'
+                });
+                if(setActiveTab) setActiveTab('arrivalChecklist');
+                return; // Stop the function
+            }
+        }
         
-        const sofItem: SOFItem = { event: eventName, status: 'complete', time: new Date().toISOString(), user: currentUser.name, loop };
-        const logItem: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `${eventName} marked complete for ${transfer.product}.` };
+        if (eventName.includes('HOSE CONNECTED')) {
+            setIsHoseLogModalOpen(true);
+            return;
+        }
+        if (eventName.includes('HOSE LEAK CHECK')) {
+            setIsPressureCheckModalOpen(true);
+            return;
+        }
+        if (eventName.includes('SLOPS SAMPLE PASSED')) {
+            setIsSampleLogModalOpen(true);
+            return;
+        }
+
+        if (eventName.includes('Directed to Bay')) {
+             // Save any pending edits first
+             saveCurrentPlan(plan);
+             const infraId = plan.transferPlan[lineIndex!]?.infrastructureId;
+             if (infraId) {
+                 directTruckToBay(plan.id, infraId);
+             }
+             return;
+        }
+        
+        // Intercept special truck events to prompt for data
+        if (['Post-Load Weighing', 'Seal Applied', 'BOL Printed'].includes(baseEvent)) {
+            setPendingCompletionEvent(eventName);
+            setEditingSof({ event: eventName, status: 'complete', time: simulatedTime.toISOString(), user: currentUser.name, loop });
+            return; // Stop here, modal will open
+        }
+        
+        const sofItem: SOFItem = { event: eventName, status: 'complete', time: simulatedTime.toISOString(), user: currentUser.name, loop };
         
         const newOp = JSON.parse(JSON.stringify(plan)) as Operation;
-        const t = newOp.transferPlan[activeLineIndex!].transfers[activeTransferIndex!];
+
+        if (newOp.status === 'planned') {
+            newOp.status = 'active';
+            newOp.activityHistory.push({ time: sofItem.time, user: currentUser.name, action: 'STATUS_UPDATE', details: 'Operation automatically activated on first SOF step.' });
+        }
+        
+        const t = newOp.transferPlan[lineIndex!].transfers[transferIndex!];
         if (!t) return;
         
         const sofIndex = (t.sof || []).findIndex(item => item.event === eventName && item.loop === loop);
@@ -238,101 +406,234 @@ const ProductTransferDetails: React.FC = () => {
         } else {
             t.sof = [...(t.sof || []), sofItem];
         }
-        newOp.activityHistory.push(logItem);
+
+        const transferLogItem: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `${eventName} marked complete.` };
+        if (!t.transferLog) t.transferLog = [];
+        t.transferLog.push(transferLogItem);
+        newOp.activityHistory.push({ ...transferLogItem, details: `${eventName} marked complete for ${transfer.product}.` });
         
         setPlan(newOp);
         saveCurrentPlan(newOp);
     };
 
-    const handleSofClick = (eventName: string, loop: number) => {
-         // --- PRE-STEP CHECKS (Popups) ---
-        if (eventName.includes('HOSE CONNECTED')) {
-            const hoseLog = plan.hoseLog || [];
-            const productHoses = hoseLog.filter(h => h.product === transfer.product);
-            if (productHoses.length === 0) {
-                setIsHoseLogModalOpen(true);
-                return; // Stop processing until modal is handled
-            }
+    const handleCleaningSofClick = (eventName: string, loop: number) => {
+        const sofItem: SOFItem = { event: eventName, status: 'complete', time: simulatedTime.toISOString(), user: currentUser.name, loop };
+        const newOp = JSON.parse(JSON.stringify(plan)) as Operation;
+
+        if (newOp.status === 'planned') {
+            newOp.status = 'active';
+            newOp.activityHistory.push({ time: sofItem.time, user: currentUser.name, action: 'STATUS_UPDATE', details: 'Operation automatically activated on first SOF step.' });
         }
-        
-        completeSofStep(eventName, loop);
+
+        const t = newOp.transferPlan[lineIndex!].transfers[transferIndex!];
+        if (!t || !t.preTransferCleaningSof) return;
+
+        const sofIndex = t.preTransferCleaningSof.findIndex(item => item.event === eventName && item.loop === loop);
+        if (sofIndex > -1) t.preTransferCleaningSof[sofIndex] = sofItem;
+
+        const logItem: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `Line Cleaning: ${eventName} marked complete.` };
+        if (!t.transferLog) t.transferLog = [];
+        t.transferLog.push(logItem);
+        newOp.activityHistory.push({ ...logItem, details: `Line Cleaning: ${eventName} marked complete for ${transfer.product}.` });
+
+        setPlan(newOp);
+        saveCurrentPlan(newOp);
     };
     
-    const handleHoseLogSave = (logEntry: any) => {
+    const handleHoseLogSave = (logEntryData: Omit<HoseLogEntry, 'id'>) => {
         if (!plan) return;
         
         const newOp = JSON.parse(JSON.stringify(plan)) as Operation;
-        if (!newOp.hoseLog) newOp.hoseLog = [];
-        newOp.hoseLog.push(logEntry);
-        
-        // Find and complete the step in the same update
-        const t = newOp.transferPlan[activeLineIndex!].transfers[activeTransferIndex!];
+        const t = newOp.transferPlan[lineIndex!].transfers[transferIndex!];
         const step = t.sof?.find(s => s.event.includes('HOSE CONNECTED') && s.status !== 'complete');
+
         if (step) {
-            const sofIndex = t.sof!.findIndex(s => s.event === step.event && s.loop === step.loop);
-            if(sofIndex > -1) {
-                 t.sof![sofIndex] = { event: step.event, status: 'complete', time: new Date().toISOString(), user: currentUser.name, loop: step.loop };
-                 const logItem: ActivityLogItem = { time: t.sof![sofIndex].time, user: currentUser.name, action: 'SOF_UPDATE', details: `${step.event} marked complete for ${transfer.product}.` };
-                 newOp.activityHistory.push(logItem);
+            let logId = step.logId;
+            let updatedOp = newOp;
+
+            const updatePayload = {
+                logEntryData,
+                sofEvent: step.event,
+                sofLoop: step.loop,
+                logId
+            };
+            
+            const { sofItem } = (() => {
+                let currentLogId = updatePayload.logId;
+                if (currentLogId) {
+                    const logIndex = (updatedOp.hoseLog || []).findIndex(h => h.id === currentLogId);
+                    if (logIndex > -1) updatedOp.hoseLog![logIndex] = { ...updatedOp.hoseLog![logIndex], ...updatePayload.logEntryData };
+                } else {
+                    currentLogId = `hose-${Date.now()}`;
+                    if (!updatedOp.hoseLog) updatedOp.hoseLog = [];
+                    updatedOp.hoseLog.push({ id: currentLogId, ...updatePayload.logEntryData });
+                }
+
+                const newSofItem: SOFItem = {
+                    event: updatePayload.sofEvent, status: 'complete', time: simulatedTime.toISOString(), user: currentUser.name, loop: updatePayload.sofLoop, logId: currentLogId
+                };
+                return { sofItem: newSofItem };
+            })();
+
+            const sofIndex = (t.sof || []).findIndex(item => item.event === updatePayload.sofEvent && item.loop === updatePayload.sofLoop);
+            if (sofIndex > -1) t.sof![sofIndex] = sofItem;
+            else t.sof = [...(t.sof || []), sofItem];
+            
+            const logItem: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `${updatePayload.sofEvent} marked complete.` };
+            if(!t.transferLog) t.transferLog = [];
+            t.transferLog.push(logItem);
+            updatedOp.activityHistory.push({ ...logItem, details: `${updatePayload.sofEvent} marked complete for ${transfer.product}.` });
+
+            if (updatePayload.logEntryData.initials) {
+                 const sigLog: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SIGNATURE', details: `Operator initials captured.` };
+                 t.transferLog.push(sigLog);
+                 updatedOp.activityHistory.push({ ...sigLog, details: `Operator initials captured for Hose Log (${transfer.product}).` });
             }
+
+            setPlan(updatedOp);
+            saveCurrentPlan(updatedOp);
         }
         
-        setPlan(newOp);
-        saveCurrentPlan(newOp);
-
         setIsHoseLogModalOpen(false);
     };
 
-    const handleSampleLogSave = (logData: Partial<Transfer>) => {
-        if (!plan) return;
+    const handlePressureCheckSave = (logData: Omit<PressureCheckLogEntry, 'id' | 'transferId'>) => {
+        if (!plan || !transfer?.id) return;
+
+        if (logData.result !== 'Pass' || !logData.initials) {
+            alert("Cannot complete step: The pressure test must pass and be initialed by the operator.");
+            return;
+        }
 
         const newOp = JSON.parse(JSON.stringify(plan)) as Operation;
-        const t = newOp.transferPlan[activeLineIndex!].transfers[activeTransferIndex!];
-        if (t) {
-            t.samplesPassed = logData.samplesPassed;
-            t.slop = logData.slop;
-            t.surveyorSignature = logData.surveyorSignature;
+        const t = newOp.transferPlan[lineIndex!].transfers[transferIndex!];
+        const step = t.sof?.find(s => s.event.includes('HOSE LEAK CHECK') && s.status !== 'complete');
+
+        if (step) {
+            const updatePayload = {
+                logData, sofEvent: step.event, sofLoop: step.loop, logId: step.logId, transferId: t.id,
+            };
+
+            let logId = updatePayload.logId;
+            if (logId) { 
+                const logIndex = (newOp.pressureCheckLog || []).findIndex(l => l.id === logId);
+                if (logIndex > -1) newOp.pressureCheckLog![logIndex] = { ...newOp.pressureCheckLog![logIndex], ...updatePayload.logData };
+            } else { 
+                logId = `pressure-${Date.now()}`;
+                if (!newOp.pressureCheckLog) newOp.pressureCheckLog = [];
+                newOp.pressureCheckLog.push({ id: logId, transferId: updatePayload.transferId, ...updatePayload.logData });
+            }
+            
+            const sofItem: SOFItem = { event: updatePayload.sofEvent, status: 'complete', time: simulatedTime.toISOString(), user: currentUser.name, loop: updatePayload.sofLoop, logId };
+            const logItem: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `${updatePayload.sofEvent} marked complete.` };
+            if(!t.transferLog) t.transferLog = [];
+            t.transferLog.push(logItem);
+            newOp.activityHistory.push({ ...logItem, details: `${updatePayload.sofEvent} marked complete for ${transfer.product}.` });
+
+            if (updatePayload.logData.initials) {
+                const sigLog: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SIGNATURE', details: `Operator initials captured.` };
+                t.transferLog.push(sigLog);
+                newOp.activityHistory.push({ ...sigLog, details: `Operator initials captured for Pressure Check (${transfer.product}).` });
+            }
+            
+            const sofIndex = (t.sof || []).findIndex(item => item.event === updatePayload.sofEvent && item.loop === updatePayload.sofLoop);
+            if (sofIndex > -1) t.sof![sofIndex] = sofItem;
+            else t.sof = [...(t.sof || []), sofItem];
+
+            setPlan(newOp);
+            saveCurrentPlan(newOp);
         }
 
-        const step = t.sof?.find(s => s.event.includes('SLOPS SAMPLE PASSED') && s.status !== 'complete');
-        if (step) {
-            const sofIndex = t.sof!.findIndex(s => s.event === step.event && s.loop === step.loop);
-            if(sofIndex > -1) {
-                t.sof![sofIndex] = { event: step.event, status: 'complete', time: new Date().toISOString(), user: currentUser.name, loop: step.loop };
-                const logItem: ActivityLogItem = { time: t.sof![sofIndex].time, user: currentUser.name, action: 'SOF_UPDATE', details: `${step.event} marked complete for ${transfer.product}.` };
-                newOp.activityHistory.push(logItem);
-            }
+        setIsPressureCheckModalOpen(false);
+    };
+
+    const handleSampleLogSave = (logData: Partial<SampleLogEntry>) => {
+        if (!plan || !transfer.id) return;
+        
+        if (logData.samplesPassed !== 'Y' || !logData.surveyorSignature) {
+            alert("Cannot complete step: Samples must be marked as passed and the surveyor signature is required.");
+            return;
         }
-        
-        setPlan(newOp);
-        saveCurrentPlan(newOp);
-        
+
+        const newOp = JSON.parse(JSON.stringify(plan)) as Operation;
+        const t = newOp.transferPlan[lineIndex!].transfers[transferIndex!];
+        const step = t.sof?.find(s => s.event.includes('SLOPS SAMPLE PASSED') && s.status !== 'complete');
+
+        if (step) {
+            const updatePayload = {
+                logData, sofEvent: step.event, sofLoop: step.loop, logId: step.logId, transferId: transfer.id,
+            };
+
+            let logId = updatePayload.logId;
+            if (logId) { 
+                const logIndex = (newOp.sampleLog || []).findIndex(l => l.id === logId);
+                if (logIndex > -1) newOp.sampleLog![logIndex] = { ...newOp.sampleLog![logIndex], ...updatePayload.logData };
+            } else { 
+                logId = `sample-${Date.now()}`;
+                if (!newOp.sampleLog) newOp.sampleLog = [];
+                newOp.sampleLog.push({ id: logId, transferId: updatePayload.transferId, samplesPassed: 'N', slop: '', surveyorSignature: '', ...updatePayload.logData });
+            }
+            
+            const sofItem: SOFItem = { event: updatePayload.sofEvent, status: 'complete', time: simulatedTime.toISOString(), user: currentUser.name, loop: updatePayload.sofLoop, logId };
+            const logItem: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `${updatePayload.sofEvent} marked complete.` };
+            if(!t.transferLog) t.transferLog = [];
+            t.transferLog.push(logItem);
+            newOp.activityHistory.push({ ...logItem, details: `${updatePayload.sofEvent} marked complete for ${transfer.product}.` });
+
+            if (updatePayload.logData.surveyorSignature) {
+                const sigLog: ActivityLogItem = { time: sofItem.time, user: currentUser.name, action: 'SIGNATURE', details: `Surveyor signature captured.` };
+                t.transferLog.push(sigLog);
+                newOp.activityHistory.push({ ...sigLog, details: `Surveyor signature captured for Sample Log (${transfer.product}).` });
+            }
+            
+            const sofIndex = (t.sof || []).findIndex(item => item.event === updatePayload.sofEvent && item.loop === updatePayload.sofLoop);
+            if (sofIndex > -1) t.sof![sofIndex] = sofItem;
+            else t.sof = [...(t.sof || []), sofItem];
+
+            setPlan(newOp);
+            saveCurrentPlan(newOp);
+        }
+
         setIsSampleLogModalOpen(false);
     };
     
     const handleCloseUndoModal = () => {
         setOptimisticUndoEvent(null);
-        setUndoModalState({ isOpen: false, item: null });
+        setUndoModalState({ isOpen: false, item: null, type: 'commodity' });
     };
 
     const handleUndo = (reason: string) => {
         if (!undoModalState.item || !plan) return;
         
         const newOp = JSON.parse(JSON.stringify(plan)) as Operation;
-        const transferToUpdate = newOp.transferPlan[activeLineIndex!].transfers[activeTransferIndex!];
+        const transferToUpdate = newOp.transferPlan[lineIndex!].transfers[transferIndex!];
         
         const itemToUndo = undoModalState.item!;
-        const sofArray = transferToUpdate.sof || [];
+        const isCleaning = undoModalState.type === 'cleaning';
+        const sofArray = isCleaning ? transferToUpdate.preTransferCleaningSof : transferToUpdate.sof;
+        
+        if (!sofArray) return;
         
         const loopItems = sofArray.filter(s => s.loop === itemToUndo.loop);
         const itemIndexInLoop = loopItems.findIndex(s => s.event === itemToUndo.event);
         if (itemIndexInLoop === -1) return;
 
         const eventsToRevert = new Set(loopItems.slice(itemIndexInLoop).map(s => s.event));
-        transferToUpdate.sof = sofArray.map(s => (s.loop === itemToUndo.loop && eventsToRevert.has(s.event)) ? { ...s, status: 'pending', time: '', user: '' } : s);
+        const updatedSof = sofArray.map(s => (s.loop === itemToUndo.loop && eventsToRevert.has(s.event)) ? { ...s, status: 'pending' as 'pending', time: '', user: '' } : s);
+        
+        if (isCleaning) {
+            transferToUpdate.preTransferCleaningSof = updatedSof;
+        } else {
+            transferToUpdate.sof = updatedSof;
+        }
+        
+        const logTime = simulatedTime.toISOString();
+        const logContext = isCleaning ? 'Line Cleaning' : 'Transfer';
+        const transferLogItem: ActivityLogItem = { time: logTime, user: currentUser.name, action: 'SOF_REVERT', details: `Reverted step "${itemToUndo.event}" for ${logContext}. Reason: ${reason}` };
+        if(!transferToUpdate.transferLog) transferToUpdate.transferLog = [];
+        transferToUpdate.transferLog.push(transferLogItem);
 
-        const logItem: ActivityLogItem = { time: new Date().toISOString(), user: currentUser.name, action: 'SOF_UPDATE', details: `Reverted step "${itemToUndo.event}" for ${transfer.product}. Reason: ${reason}` };
-        newOp.activityHistory.push(logItem);
+        newOp.activityHistory.push({ time: logTime, user: currentUser.name, action: 'SOF_REVERT', details: `Reverted step "${itemToUndo.event}" for ${transfer.product} (${logContext}). Reason: ${reason}` });
         
         setPlan(newOp);
         saveCurrentPlan(newOp);
@@ -341,6 +642,18 @@ const ProductTransferDetails: React.FC = () => {
     };
 
     const handleDisabledClick = (item: SOFItem, index: number, items: SOFItem[]) => {
+        if (index === 0 && transfer?.preTransferCleaningSof?.some(s => s.status !== 'complete')) {
+            setInfoModal({ 
+                isOpen: true, 
+                title: 'Safety Check Failed', 
+                message: 'Required line cleaning must be completed before starting this product transfer.' + (setActiveTab ? ' You will be redirected to the Line Cleaning tab.' : '')
+            });
+            if (setActiveTab) {
+                setTimeout(() => setActiveTab('lineCleaning'), 50);
+            }
+            return;
+        }
+
         if (!isPreviousStepComplete(items, index)) {
             setInfoModal({ isOpen: true, title: 'Step Unavailable', message: `Please complete the previous step first: "${items[index - 1].event}"` });
         } else {
@@ -348,7 +661,10 @@ const ProductTransferDetails: React.FC = () => {
         }
     };
     
-    const getActiveSofEvent = (sofItems: SOFItem[]): string | null => {
+    const getActiveSofEvent = (sofItems: SOFItem[], isCommoditySof: boolean): string | null => {
+        if (isCommoditySof && sofItems.length > 0 && sofItems[0].status === 'pending' && transfer?.preTransferCleaningSof?.some(s => s.status !== 'complete')) {
+            return null;
+        }
         for (let i = 0; i < sofItems.length; i++) {
             if (sofItems[i].status === 'pending') {
                 if (isPreviousStepComplete(sofItems, i)) {
@@ -360,7 +676,8 @@ const ProductTransferDetails: React.FC = () => {
         return null; 
     };
     
-    const activeSofEvent = getActiveSofEvent(transfer.sof || []);
+    const activeCommoditySofEvent = getActiveSofEvent(transfer.sof || [], true);
+    const activeCleaningSofEvent = getActiveSofEvent(transfer.preTransferCleaningSof || [], false);
 
     const loops: { [loopNum: number]: SOFItem[] } = {};
     (transfer.sof || []).forEach(item => {
@@ -369,13 +686,13 @@ const ProductTransferDetails: React.FC = () => {
     });
     const sofLoops = Object.entries(loops).map(([loopNum, items]) => ({ loopNum: parseInt(loopNum), items })).sort((a, b) => a.loopNum - b.loopNum);
 
-    const transferred = transfer.transferredTonnes || 0;
     const total = transfer.tonnes || 0;
     const tankName = transfer.direction.endsWith(' to Tank') ? transfer.to : transfer.from;
     const transferDirection = transfer.direction.endsWith(' to Tank') ? 'in' : 'out';
     
     const handleSaveSofDetails = (opToSave: Operation) => {
         setPlan(opToSave);
+        setPendingCompletionEvent(null);
     };
 
     return (
@@ -383,7 +700,7 @@ const ProductTransferDetails: React.FC = () => {
             {editingSof && transfer && (
                 <SofDetailsModal
                     isOpen={!!editingSof}
-                    onClose={() => setEditingSof(null)}
+                    onClose={() => { setEditingSof(null); setPendingCompletionEvent(null); }}
                     onSave={handleSaveSofDetails}
                     sofItem={editingSof}
                     plan={plan}
@@ -393,112 +710,169 @@ const ProductTransferDetails: React.FC = () => {
             <Modal isOpen={infoModal.isOpen} onClose={() => setInfoModal({isOpen: false, title: '', message: ''})} title={infoModal.title} footer={<button onClick={() => setInfoModal({isOpen: false, title: '', message: ''})} className="btn-primary">OK</button>}><p>{infoModal.message}</p></Modal>
             <UndoSofModal isOpen={undoModalState.isOpen} onClose={handleCloseUndoModal} onConfirm={handleUndo} />
             {plan.modality === 'vessel' && <>
-                <HoseLogModal isOpen={isHoseLogModalOpen} onClose={() => setIsHoseLogModalOpen(false)} onSave={handleHoseLogSave} product={transfer.product} />
-                <SampleLogModal isOpen={isSampleLogModalOpen} onClose={() => setIsSampleLogModalOpen(false)} onSave={handleSampleLogSave} transfer={transfer} />
+                <HoseLogModal isOpen={isHoseLogModalOpen} onClose={handleHoseLogClose} onSave={handleHoseLogSave} product={transfer.product} />
+                <PressureCheckModal isOpen={isPressureCheckModalOpen} onClose={handlePressureCheckClose} onSave={handlePressureCheckSave} transfer={transfer} />
+                <SampleLogModal isOpen={isSampleLogModalOpen} onClose={handleSampleLogClose} onSave={handleSampleLogSave} transfer={transfer} sampleLog={plan.sampleLog?.find(l => l.transferId === transfer.id)} />
             </>}
-            <div className="relative">
-                {plan.status === 'active' && <ScadaDataSidebar isCollapsed={isScadaSidebarCollapsed} onToggle={() => setIsScadaSidebarCollapsed(p => !p)} />}
-                <div className="p-4 sm:p-6 space-y-6">
-                    <div className="flex justify-between items-center">
-                        <div>
-                            <h2 className="text-3xl font-bold text-brand-dark">{transfer.product}</h2>
-                            <p className="text-lg text-text-secondary">{transfer.customer}</p>
+            <div className="card !p-0">
+                <div className="p-2 border-b">
+                    {/* Compact Header */}
+                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                        <div className="flex items-center gap-3">
+                            <h2 className="text-2xl font-bold truncate">{transfer.product}</h2>
+                            <p className="text-lg text-text-secondary truncate font-medium">{transfer.customer}</p>
                         </div>
-                         <button onClick={() => switchView('operation-details', plan.id)} className="btn-secondary">
-                            <i className="fas fa-arrow-left mr-2"></i>Back to Overview
+                        <div className="flex items-center gap-x-4 text-sm text-text-secondary">
+                            <span title="Infrastructure"><i className="fas fa-dolly-flatbed mr-1"></i>{formatInfraName(plan.transferPlan[lineIndex].infrastructureId)}</span>
+                            <span title="Direction" className="font-semibold">{transfer.direction}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                            <div>
+                                <p className="text-sm font-semibold text-text-secondary text-right">PLANNED</p>
+                                <p className="text-lg font-bold text-right">{transfer.tonnes.toLocaleString()} T</p>
+                            </div>
+                            <div className="text-blue-700">
+                                <p className="text-sm font-bold text-right">TRANSFERRED</p>
+                                <p className="text-2xl font-bold text-right">{((transfer.transferredTonnes || 0) + (transfer.slopsTransferredTonnes || 0)).toFixed(2)} T</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-2 space-y-2">
+                    <CompactTankIndicator tankName={tankName} transferVolume={total} transferDirection={transferDirection} />
+
+                    {/* Compact Tab Switcher */}
+                    <div className="flex border-b border-slate-200">
+                        <button onClick={() => setActiveTabInternal('sof')} className={`px-3 py-1 text-sm font-semibold ${activeTabInternal === 'sof' ? 'border-b-2 border-brand-primary text-brand-primary' : 'text-slate-500'}`}>
+                            Statement of Facts
+                        </button>
+                        <button onClick={() => setActiveTabInternal('services')} className={`px-3 py-1 text-sm font-semibold ${activeTabInternal === 'services' ? 'border-b-2 border-brand-primary text-brand-primary' : 'text-slate-500'}`}>
+                            Services ({transfer.specialServices.length})
                         </button>
                     </div>
+                    
+                    {activeTabInternal === 'sof' && (
+                        <div className="space-y-3 pt-1">
+                            {transfer.preTransferCleaningSof && transfer.preTransferCleaningSof.length > 0 && (
+                                <div className="p-3 border-2 border-red-300 rounded-lg bg-red-50">
+                                    <h4 className="font-bold text-base mb-2 text-red-800 flex items-center">
+                                        <i className="fas fa-exclamation-triangle mr-2"></i> Required Line Cleaning
+                                    </h4>
+                                    <SofSection 
+                                        sofItems={transfer.preTransferCleaningSof}
+                                        onSofClick={handleCleaningSofClick}
+                                        activeStepEvent={activeCleaningSofEvent}
+                                        onDisabledClick={(item, index, items) => handleDisabledClick(item, index, items)}
+                                        onUndoClick={(item) => { setOptimisticUndoEvent(item.event); setUndoModalState({isOpen: true, item, type: 'cleaning'}); }}
+                                        onEditClick={(item) => setEditingSof(item)}
+                                        optimisticUndoEvent={optimisticUndoEvent}
+                                        pendingCompletionEvent={null}
+                                        setInfoModal={setInfoModal}
+                                    />
+                                </div>
+                            )}
+                            {sofLoops.map(({ loopNum, items }) => (
+                                <div key={loopNum}>
+                                    {sofLoops.length > 1 && <h5 className="font-bold text-xs mb-1 uppercase text-text-secondary">{loopNum > 1 ? `Rework Loop #${loopNum}` : 'Initial Loop'}</h5>}
+                                    <div className="grid grid-cols-1 gap-1">
+                                        {items.map((sofItem, index) => {
+                                            let status = sofItem.status;
+                                            if (optimisticUndoEvent === sofItem.event && status === 'complete') {
+                                                status = 'in-progress';
+                                            } else if (status === 'pending' && sofItem.event === activeCommoditySofEvent) {
+                                                status = 'in-progress';
+                                            } else if (pendingCompletionEvent === sofItem.event) {
+                                                status = 'complete';
+                                            }
+                                            
+                                            const hasPermission = canPerformSofAction(currentUser, plan.modality, sofItem.event);
 
-                    <div className="card p-6">
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
-                            <div><p className="font-semibold text-text-secondary">Infrastructure</p><p className="text-xl font-bold">{formatInfraName(plan.transferPlan[activeLineIndex].infrastructureId)}</p></div>
-                            <div><p className="font-semibold text-text-secondary">Direction</p><p className="text-xl font-bold">{transfer.direction}</p></div>
-                            <div><p className="font-semibold text-text-secondary">Planned Tonnes</p><p className="text-xl font-bold">{total.toLocaleString()}</p></div>
-                            <div className="bg-blue-50 p-2 rounded-lg"><p className="font-bold text-blue-700">Transferred</p><p className="text-2xl font-bold text-blue-800">{transferred.toFixed(2)} T</p></div>
-                        </div>
-                    </div>
+                                            let hasIncompleteData = false;
+                                            let incompleteDataMessage = '';
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="card p-6">
-                            <h3 className="text-xl font-bold text-brand-dark mb-4">Statement of Facts</h3>
-                            <div className="space-y-6">
-                                {sofLoops.map(({ loopNum, items }) => (
-                                    <div key={loopNum}>
-                                        {sofLoops.length > 1 && <h5 className="font-bold text-sm mb-2 uppercase text-text-secondary">{loopNum > 1 ? `Rework Loop #${loopNum}` : 'Initial Loop'}</h5>}
-                                        <div className="grid grid-cols-1 gap-2">
-                                            {items.map((sofItem, index) => {
-                                                let status = sofItem.status;
-                                                if (optimisticUndoEvent === sofItem.event && status === 'complete') {
-                                                    status = 'in-progress';
-                                                } else if (status === 'pending' && sofItem.event === activeSofEvent) {
-                                                    status = 'in-progress';
+                                            if (sofItem.status === 'complete' && sofItem.logId) {
+                                                if (sofItem.event.includes('HOSE CONNECTED') && !plan.hoseLog?.some(h => h.id === sofItem.logId)) {
+                                                    hasIncompleteData = true;
+                                                    incompleteDataMessage = 'Hose log data is missing.';
                                                 }
-                                                
-                                                let hasIncompleteData = false;
-                                                let incompleteDataMessage = '';
-
-                                                if (sofItem.status === 'complete') {
-                                                    if (sofItem.event.includes('HOSE CONNECTED') && !plan.hoseLog?.some(h => h.product === transfer.product)) {
-                                                        hasIncompleteData = true;
-                                                        incompleteDataMessage = 'Hose log is missing for this connection.';
-                                                    }
-                                                    if (sofItem.event.includes('SLOPS SAMPLE PASSED') && (transfer.samplesPassed !== 'Y' || !transfer.surveyorSignature)) {
+                                                if (sofItem.event.includes('SLOPS SAMPLE PASSED')) {
+                                                    const sampleLog = plan.sampleLog?.find(s => s.id === sofItem.logId);
+                                                    if (!sampleLog || sampleLog.samplesPassed !== 'Y' || !sampleLog.surveyorSignature) {
                                                         hasIncompleteData = true;
                                                         incompleteDataMessage = 'Sample log is incomplete or samples not marked as passed.';
                                                     }
                                                 }
-                                                
-                                                return (
-                                                     <div 
-                                                        key={sofItem.event} 
-                                                        className={`sof-item ${status}`}
-                                                        onClick={() => {
-                                                            if (status === 'pending') handleDisabledClick(sofItem, index, items); 
-                                                        }}
-                                                    >
-                                                         {status === 'pending' ? (
-                                                            <div className={`sof-icon`}><i className={`fas fa-clock`}></i></div>
-                                                        ) : (
-                                                            <SofSlider
-                                                                status={status as 'in-progress' | 'complete'}
-                                                                onComplete={() => handleSofClick(sofItem.event, sofItem.loop)}
-                                                                onUndo={() => { setOptimisticUndoEvent(sofItem.event); setUndoModalState({isOpen: true, item: sofItem}); }}
-                                                            />
-                                                        )}
-                                                        
-                                                        <div className="flex-1">
-                                                            <h5 className="font-semibold text-base flex items-center gap-2">
-                                                                {sofItem.event}
-                                                                {hasIncompleteData && <i className="fas fa-exclamation-triangle text-yellow-500" title={incompleteDataMessage}></i>}
-                                                            </h5>
-                                                            <p className="text-sm text-text-tertiary">{sofItem.status === 'complete' ? `${new Date(sofItem.time).toLocaleTimeString()} | ${sofItem.user}` : 'Pending'}</p>
+                                            }
+                                            
+                                            return (
+                                                <div 
+                                                    key={sofItem.event} 
+                                                    className={`sof-item ${status}`}
+                                                    onClick={() => {
+                                                        if (status === 'pending') {
+                                                            handleDisabledClick(sofItem, index, items); 
+                                                        } else if (status !== 'complete' && !hasPermission) {
+                                                            setInfoModal({isOpen: true, title: "Permission Denied", message: "Your role does not have permission to perform this action."});
+                                                        }
+                                                    }}
+                                                >
+                                                    {status === 'pending' || (status !== 'complete' && !hasPermission) ? (
+                                                        <div className={`sof-icon`} title={!hasPermission ? "Permission Denied" : ""}>
+                                                            <i className={`fas ${!hasPermission && status !== 'pending' ? 'fa-lock' : 'fa-clock'}`}></i>
                                                         </div>
-                                                        {sofItem.status === 'complete' && (
-                                                            <button onClick={() => setEditingSof(sofItem)} className="sof-edit-btn">
-                                                                <i className="fas fa-pen mr-2"></i> Edit
-                                                            </button>
-                                                        )}
+                                                    ) : (
+                                                        <SofSlider
+                                                            status={status as 'in-progress' | 'complete'}
+                                                            onComplete={() => handleSofClick(sofItem.event, sofItem.loop)}
+                                                            onUndo={() => {
+                                                                if (sofItem.event.includes('Directed to Bay')) {
+                                                                    saveCurrentPlan(plan);
+                                                                    revertCallOff(plan.id);
+                                                                    return;
+                                                                }
+                                                                setOptimisticUndoEvent(sofItem.event); 
+                                                                setUndoModalState({isOpen: true, item: sofItem, type: 'commodity'}); 
+                                                            }}
+                                                        />
+                                                    )}
+                                                    
+                                                    <div className="flex-1">
+                                                        <h5 className="font-semibold text-sm flex items-center gap-2">
+                                                            {sofItem.event}
+                                                            {hasIncompleteData && <i className="fas fa-exclamation-triangle text-yellow-500" title={incompleteDataMessage}></i>}
+                                                        </h5>
+                                                        <p className="text-xs text-text-tertiary">{sofItem.status === 'complete' ? `${new Date(sofItem.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} | ${sofItem.user}` : 'Pending'}</p>
                                                     </div>
-                                                );
-                                            })}
-                                        </div>
+                                                    {sofItem.status === 'complete' && (
+                                                        <button onClick={() => setEditingSof(sofItem)} className="sof-edit-btn">
+                                                            <i className="fas fa-pen mr-2"></i> Edit
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
                                     </div>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="space-y-6">
-                            <TankLevelIndicator tankName={tankName} transferVolume={total} transferDirection={transferDirection} />
-                            
-                            <div className="card p-6">
-                                 <h3 className="text-xl font-bold text-brand-dark mb-4">Special Services</h3>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {transfer.specialServices.length > 0 ? transfer.specialServices.map(s => (
-                                        <span key={s.name} className="text-sm font-semibold bg-slate-200 text-slate-700 px-3 py-1.5 rounded-full">{s.name}</span>
-                                    )) : <span className="text-sm italic text-text-tertiary">None</span>}
                                 </div>
-                            </div>
+                            ))}
                         </div>
-                    </div>
+                    )}
+                    
+                    {activeTabInternal === 'services' && (
+                        <div className="pt-2">
+                            {transfer.specialServices.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                    {transfer.specialServices.map(service => (
+                                        <span key={service.name} className="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-1 rounded-full">
+                                            {service.name}
+                                        </span>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="text-sm text-slate-500 italic text-center py-8">No special services for this transfer.</p>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
         </>

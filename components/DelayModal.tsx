@@ -6,6 +6,8 @@ interface DelayModalProps {
     isOpen: boolean;
     onClose: () => void;
     opId: string;
+    onSave?: (reason: string, notes: string) => void;
+    title?: string;
 }
 
 const DELAY_REASONS = [
@@ -18,7 +20,7 @@ const DELAY_REASONS = [
     "Other",
 ];
 
-const DelayModal: React.FC<DelayModalProps> = ({ isOpen, onClose, opId }) => {
+const DelayModal: React.FC<DelayModalProps> = ({ isOpen, onClose, opId, onSave, title = "Log Delay" }) => {
     const context = useContext(AppContext);
     const [reason, setReason] = useState(DELAY_REASONS[0]);
     const [notes, setNotes] = useState('');
@@ -28,7 +30,11 @@ const DelayModal: React.FC<DelayModalProps> = ({ isOpen, onClose, opId }) => {
             alert("Please select a reason for the delay.");
             return;
         }
-        context?.logDelay(opId, reason, notes);
+        if (onSave) {
+            onSave(reason, notes);
+        } else {
+            context?.logDelay(opId, reason, notes);
+        }
         onClose();
         setNotes('');
         setReason(DELAY_REASONS[0]);
@@ -38,7 +44,7 @@ const DelayModal: React.FC<DelayModalProps> = ({ isOpen, onClose, opId }) => {
         <Modal
             isOpen={isOpen}
             onClose={onClose}
-            title="Log Delay"
+            title={title}
             footer={
                 <>
                     <button onClick={onClose} className="btn-secondary">Cancel</button>
