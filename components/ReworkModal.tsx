@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useContext } from 'react';
 import Modal from './Modal';
 import { Operation } from '../types';
@@ -8,7 +9,6 @@ interface ReworkModalProps {
     isOpen: boolean;
     onClose: () => void;
     operation: Operation | null;
-    priority: 'high' | 'normal';
 }
 
 const REWORK_REASONS = [
@@ -19,21 +19,22 @@ const REWORK_REASONS = [
     "Other"
 ];
 
-const ReworkModal: React.FC<ReworkModalProps> = ({ isOpen, onClose, operation, priority }) => {
+const ReworkModal: React.FC<ReworkModalProps> = ({ isOpen, onClose, operation }) => {
     const context = useContext(AppContext);
     const [reason, setReason] = useState(REWORK_REASONS[0]);
     const [notes, setNotes] = useState('');
+    const [priority, setPriority] = useState<'high' | 'normal'>('normal');
 
     useEffect(() => {
         if (isOpen && operation) {
             setReason(REWORK_REASONS[0]);
-            // Pre-fill notes with weight info if available and reason is related to load
             const loadedWeight = operation.transferPlan?.[0]?.transfers?.[0]?.loadedWeight;
             if (loadedWeight) {
                 setNotes(`Recorded Weight: ${loadedWeight} T. `);
             } else {
                 setNotes('');
             }
+            setPriority('normal'); // Reset priority on open
         }
     }, [isOpen, operation]);
 
@@ -70,6 +71,13 @@ const ReworkModal: React.FC<ReworkModalProps> = ({ isOpen, onClose, operation, p
                 <div>
                     <label>Notes (Optional)</label>
                     <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Add any additional details..." />
+                </div>
+                <div>
+                    <label>Priority</label>
+                    <select value={priority} onChange={e => setPriority(e.target.value as 'high' | 'normal')} className="mt-1">
+                        <option value="normal">Normal Priority</option>
+                        <option value="high">High Priority</option>
+                    </select>
                 </div>
             </div>
         </Modal>

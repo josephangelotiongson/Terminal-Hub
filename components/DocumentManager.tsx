@@ -1,4 +1,5 @@
 
+
 import React, { useContext, useState } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, Document } from '../types';
@@ -8,6 +9,7 @@ import ConfirmModal from './ConfirmModal';
 interface DocumentManagerProps {
     operation: Operation;
     onUpdate: (updatedOperation: Operation, auditDetails: { action: string; details: string }) => void;
+    isReadOnly?: boolean;
 }
 
 const fileToBase64 = (file: File): Promise<string> => {
@@ -19,7 +21,7 @@ const fileToBase64 = (file: File): Promise<string> => {
     });
 };
 
-const DocumentManager: React.FC<DocumentManagerProps> = ({ operation, onUpdate }) => {
+const DocumentManager: React.FC<DocumentManagerProps> = ({ operation, onUpdate, isReadOnly }) => {
     const { currentUser, simulatedTime } = useContext(AppContext)!;
     const [isUploading, setIsUploading] = useState(false);
     const [deletingDoc, setDeletingDoc] = useState<Document | null>(null);
@@ -102,8 +104,8 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({ operation, onUpdate }
                 message={`Are you sure you want to delete "${deletingDoc?.name}"? This action cannot be undone.`}
             />
             <div className="flex justify-end mb-4">
-                <label className={`btn-primary ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                    <input type="file" multiple className="hidden" onChange={handleFileUpload} disabled={isUploading} />
+                <label className={`btn-primary ${isUploading || isReadOnly ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <input type="file" multiple className="hidden" onChange={handleFileUpload} disabled={isUploading || isReadOnly} />
                     {isUploading ? (
                         <><i className="fas fa-spinner fa-spin mr-2"></i>Uploading...</>
                     ) : (
@@ -128,7 +130,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({ operation, onUpdate }
                                 <button onClick={() => handleView(doc)} className="btn-secondary !text-xs !py-1 !px-2" title="View/Download">
                                     <i className="fas fa-eye mr-1"></i> View
                                 </button>
-                                <button onClick={() => handleDelete(doc)} className="btn-icon danger" title="Delete">
+                                <button onClick={() => handleDelete(doc)} className="btn-icon danger" title="Delete" disabled={isReadOnly}>
                                     <i className="fas fa-trash"></i>
                                 </button>
                             </div>

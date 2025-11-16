@@ -1,7 +1,8 @@
 
 
+
 import React, { createContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
-import { Operation, AppSettings, Hold, ScadaData, UIState, View, TerminalSettings, Modality, ActivityAction, ActivityLogItem, ViewHistoryItem, RequeueDetails, User, SOFItem, DipSheetEntry, WorkOrderStatus, WorkOrderNote, CycleTimeData, Transfer, OutageStatus, TransferPlanItem, HistorianData, HistorianDataPoint, SpecialServiceData, ManpowerSchedule } from '../types';
+import { Operation, AppSettings, Hold, ScadaData, UIState, View, TerminalSettings, Modality, ActivityAction, ActivityLogItem, ViewHistoryItem, RequeueDetails, User, SOFItem, DipSheetEntry, WorkOrderStatus, WorkOrderNote, CycleTimeData, Transfer, OutageStatus, TransferPlanItem, HistorianData, HistorianDataPoint, SpecialServiceData, ManpowerSchedule, ReportType } from '../types';
 import { dataService } from '../services/api';
 import { tankService } from '../services/tankService';
 import { historianService } from '../services/historianService';
@@ -32,7 +33,10 @@ interface AppContextType {
     setHolds: React.Dispatch<React.SetStateAction<Hold[]>>;
     scadaData: ScadaData;
     uiState: UIState;
-    setUiState: React.Dispatch<React.SetStateAction<UIState>>;
+    setPlanningViewMode: (mode: 'grid' | 'list' | 'kanban') => void;
+    // FIX: Removed duplicate identifier 'updateColumnVisibility'.
+    setReportFilters: (filters: Partial<UIState['reports']>) => void;
+    setCompletedOpsTab: (tab: 'report' | 'list') => void;
     online: boolean;
     lastUpdated: Date;
     selectedTerminal: string;
@@ -62,7 +66,7 @@ interface AppContextType {
     workspaceSearchTerm: string;
     setWorkspaceSearchTerm: React.Dispatch<React.SetStateAction<string>>;
     visibleInfrastructure: string[];
-    setVisibleInfrastructure: React.Dispatch<React.SetStateAction<string[]>>;
+    updateColumnVisibility: (newVisibleCols: string[]) => void;
     rescheduleModalData: { opId: string | null; viewDate: Date; source?: 'dashboard-delay', priority?: 'high' | 'normal' };
     openRescheduleModal: (opId: string, viewDate?: Date, source?: 'dashboard-delay', priority?: 'high' | 'normal') => void;
     closeRescheduleModal: () => void;
@@ -86,7 +90,9 @@ interface AppContextType {
     placementOpId: string | null;
     startPlacementMode: (opId: string) => void;
     cancelPlacementMode: () => void;
-    confirmPlacement: (newEta: string, newResource: string) => void;
+    confirmPlacement: (opId: string, newEta: string, newResource: string) => void;
+    isSchedulerMode: boolean;
+    setIsSchedulerMode: React.Dispatch<React.SetStateAction<boolean>>;
 
     // Editing State
     editingOp: Operation | null;
@@ -106,6 +112,8 @@ interface AppContextType {
     requeueTruckOperation: (opId: string, reason: string, details: { notes?: string; photo?: string }, priority?: 'high' | 'normal') => void;
     requeueOperation: (opId: string, reason: string, priority?: 'high' | 'normal') => void;
     reworkTruckOperation: (opId: string, reason: string, notes: string, priority?: 'high' | 'normal') => void;
+    processReworkTruck: (opId: string) => void;
+    markTruckArrived: (opId: string) => void;
     acceptTruckArrival: (opId: string) => void;
     callOffTruck: (opId: string) => void;
     directTruckToBay: (opId: string, bayInfraId: string) => void;
@@ -123,10 +131,12 @@ interface AppContextType {
     handleCompleteOperation: (opId: string) => void; // Expose for use in OperationDetails
     updateCompletedOperationDetails: (opId: string, opUpdates: Partial<Operation>, transferId?: string, transferUpdates?: Partial<Transfer>) => void;
     updatePreArrivalCheck: (opId: string, checkName: string, status: 'pending' | 'complete') => void;
-    updateVesselServiceStatus: (opId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => void;
+    updateOperationServiceStatus: (opId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => void;
+    updateTransferServiceStatus: (opId: string, transferId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => void;
     conflictData: { isOpen: boolean; conflictingOps: Operation[]; hold: Hold | null };
     closeConflictModal: () => void;
     resolveAndRescheduleConflicts: () => void;
+    // FIX: Add `bayInfraId` to the type definition for directToBayModalState to match the state's shape.
     directToBayModalState: { isOpen: boolean; op: Operation | null; isRevert: boolean; bayInfraId?: string; };
     closeDirectToBayModal: () => void;
     handleConfirmBayAction: () => void;
@@ -144,6 +154,18 @@ interface AppContextType {
     setManpowerSchedule: React.Dispatch<React.SetStateAction<ManpowerSchedule>>;
     updateUserShift: (userName: string, shift: 'Day' | 'Swing' | 'Night' | 'Off') => void;
     updateUserAssignments: (userName: string, assignments: { modalities: Modality[], areas: string[] }) => void;
+    
+    // Bay Clearing
+    lastCompletedOpByInfra: Record<string, string>;
+    clearBayForNextOp: (infraId: string) => void;
+    planningCustomerFilter: string[];
+    setPlanningCustomerFilter: React.Dispatch<React.SetStateAction<string[]>>;
+
+    // Request Reschedule
+    requestRescheduleModalState: { isOpen: boolean; opId: string | null };
+    openRequestRescheduleModal: (opId: string) => void;
+    closeRequestRescheduleModal: () => void;
+    requestReschedule: (opId: string, reason: string, notes: string) => void;
 }
 
 export const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -170,13 +192,27 @@ const INITIAL_SCHEDULE: ManpowerSchedule = {
   'Operator 5': {},
 };
 
+const lastYear = new Date().getFullYear() - 1;
+const INITIAL_UI_STATE: UIState = {
+    planningViewMode: 'grid',
+    columnVisibility: {},
+    reports: {
+        reportType: 'cycleTime',
+        startDate: `${lastYear}-01-01`,
+        endDate: `${lastYear}-12-31`,
+        customer: 'All',
+        productGroup: 'All',
+    },
+    completedOps: { activeTab: 'list' }
+};
+
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [operations, setOperations] = useState<Operation[]>([]);
     const [settings, setSettings] = useState<AppSettings>(dataService.loadSettings());
     const [holds, setHolds] = useState<Hold[]>([]);
     const [scadaData, setScadaData] = useState<ScadaData>({});
     const [historianData, setHistorianData] = useState<HistorianData>({});
-    const [uiState, setUiState] = useState<UIState>({ planningViewMode: 'grid' });
+    const [uiState, setUiState] = useState<UIState>(INITIAL_UI_STATE);
     const [online, setOnline] = useState(navigator.onLine);
     const [lastUpdated, setLastUpdated] = useState(new Date());
     const [selectedTerminal, setSelectedTerminalState] = useState('PAL');
@@ -191,7 +227,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const [users, setUsers] = useState<User[]>(INITIAL_USERS);
     const [currentUser, setCurrentUser] = useState<User>(INITIAL_USERS[0]);
     const [viewHistory, setViewHistory] = useState<ViewHistoryItem[]>([]);
-    const [workspaceFilter, setWorkspaceFilter] = useState<Modality | 'all'>('all');
+    const [workspaceFilter, setWorkspaceFilter] = useState<Modality | 'all'>('truck');
     const [workspaceSearchTerm, setWorkspaceSearchTerm] = useState('');
     const [visibleInfrastructure, setVisibleInfrastructure] = useState<string[]>([]);
     const [userAllowedInfra, setUserAllowedInfra] = useState<string[]>([]);
@@ -211,6 +247,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }>({ isOpen: false, op: null, isRevert: false });
     const [redirectBayModalState, setRedirectBayModalState] = useState<{ isOpen: boolean; op: Operation | null; occupiedByOp: Operation | null; }>({ isOpen: false, op: null, occupiedByOp: null });
     const [manpowerSchedule, setManpowerSchedule] = useState<ManpowerSchedule>(INITIAL_SCHEDULE);
+    const [isSchedulerMode, setIsSchedulerMode] = useState(false);
+    const [lastCompletedOpByInfra, setLastCompletedOpByInfra] = useState<Record<string, string>>({});
+    const [planningCustomerFilter, setPlanningCustomerFilter] = useState<string[]>(['All']);
+    const [requestRescheduleModalState, setRequestRescheduleModalState] = useState<{ isOpen: boolean; opId: string | null }>({ isOpen: false, opId: null });
 
 
     // Simulation State
@@ -302,177 +342,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 return;
             }
 
-            let wasModified = false;
             const newScadaData: ScadaData = {};
-            const opsCopy = JSON.parse(JSON.stringify(currentOperations)) as Operation[];
             
-            // Create a mutable copy of tanks for this interval's updates
-            let tanksCopy = JSON.parse(JSON.stringify(tanksRef.current));
-            let tanksWereModified = false;
-
+            // DEMO-ONLY SCADA: This section is for UI demonstration only.
+            // It generates fake SCADA data but does NOT update operation progress or tank levels.
+            // This prevents excessive writes to localStorage in the demo environment.
             activeOps.forEach(activeOp => {
-                const opIndex = opsCopy.findIndex((o: Operation) => o.id === activeOp.id);
-                if (opIndex === -1) return;
+                const startPumpEventName = activeOp.modality === 'vessel' ? 'START PUMPING' : 'Pumping Started';
+                const stopPumpEventName = activeOp.modality === 'vessel' ? 'STOP PUMPING' : 'Pumping Stopped';
 
-                let currentOp = opsCopy[opIndex];
-                
-                const linesToSimulate: { [key: string]: boolean } = {};
-                const startPumpEventName = currentOp.modality === 'vessel' ? 'START PUMPING' : 'Pumping Started';
-                const stopPumpEventName = currentOp.modality === 'vessel' ? 'STOP PUMPING' : 'Pumping Stopped';
-
-                (currentOp.transferPlan || []).forEach((line: TransferPlanItem) => {
-                    linesToSimulate[line.infrastructureId] = (line.transfers || []).some((t: Transfer) =>
+                (activeOp.transferPlan || []).forEach((line: TransferPlanItem) => {
+                    // Check if any transfer on this infrastructure line is actively pumping.
+                    const isPumping = (line.transfers || []).some((t: Transfer) =>
                         (t.sof || []).some(s => s.event.includes(startPumpEventName) && s.status === 'complete') &&
                         !(t.sof || []).some(s => s.event.includes(stopPumpEventName) && s.status === 'complete')
                     );
-                });
-
-                currentOp.transferPlan = currentOp.transferPlan.map((line: TransferPlanItem) => {
-                    const isPumping = linesToSimulate[line.infrastructureId];
+                    
+                    // Generate fake data for the SCADA modal UI.
                     const flowRate = isPumping ? (line.infrastructureId.startsWith('L') ? 1200 : line.infrastructureId.startsWith('Bay') ? 150 : 300) + (Math.random() * 50 - 25) : 0;
-                    
-                    if (isPumping) {
-                        wasModified = true;
-                        
-                        const activeTransfersOnLine = line.transfers.filter((t: Transfer) => {
-                            const totalPumped = (t.transferredTonnes || 0) + (t.slopsTransferredTonnes || 0);
-                            return ((t.tonnes || 0) - totalPumped > 0) &&
-                                (t.sof || []).some(s => s.event.includes(startPumpEventName) && s.status === 'complete') &&
-                                !(t.sof || []).some(s => s.event.includes(stopPumpEventName) && s.status === 'complete');
-                        }).length;
-                        
-                        const flowPerTransfer = activeTransfersOnLine > 0 ? flowRate / activeTransfersOnLine : 0;
-                        const increment = (flowPerTransfer * 1.5) / 3600;
-
-                        line.transfers = line.transfers.map((t: Transfer) => {
-                            const isToTank = t.direction.endsWith(' to Tank');
-                            const isFromTank = t.direction.startsWith('Tank to');
-
-                            if (isFromTank && t.from && tanksCopy[t.from]) {
-                                tanksCopy[t.from].current = Math.max(0, (tanksCopy[t.from].current || 0) - increment);
-                                tanksWereModified = true;
-                            }
-                            if (isToTank && t.to && tanksCopy[t.to]) {
-                                const capacity = tanksCopy[t.to].capacity || Infinity;
-                                tanksCopy[t.to].current = Math.min(capacity, (tanksCopy[t.to].current || 0) + increment);
-                                tanksWereModified = true;
-                            }
-
-                            const totalPumped = (t.transferredTonnes || 0) + (t.slopsTransferredTonnes || 0);
-                            if (totalPumped >= t.tonnes) return t;
-                            
-                            const slopsPassed = (t.sof || []).some(s => s.event.includes('SLOPS SAMPLE PASSED') && s.status === 'complete');
-                            
-                            const newTotalPumped = totalPumped + increment;
-
-                            if (newTotalPumped >= t.tonnes) {
-                                const remainingToPump = t.tonnes - totalPumped;
-                                if (currentOp.modality === 'vessel' && !slopsPassed) {
-                                    t.slopsTransferredTonnes = (t.slopsTransferredTonnes || 0) + remainingToPump;
-                                } else {
-                                    t.transferredTonnes = (t.transferredTonnes || 0) + remainingToPump;
-                                }
-
-                                const sofByLoop: Record<number, SOFItem[]> = (t.sof || []).reduce((acc: Record<number, SOFItem[]>, s: SOFItem) => { (acc[s.loop] = acc[s.loop] || []).push(s); return acc; }, {});
-                                let loopToStop: number | null = null;
-                                for (const loopNum of Object.keys(sofByLoop).map(Number).sort((a, b) => b - a)) {
-                                    const loopEvents = sofByLoop[loopNum];
-                                    const hasStarted = loopEvents.some(s => s.event.includes(startPumpEventName) && s.status === 'complete');
-                                    const hasStopped = loopEvents.some(s => s.event.includes(stopPumpEventName));
-                                    if (hasStarted && !hasStopped) { loopToStop = loopNum; break; }
-                                }
-                                if (loopToStop !== null) {
-                                    const finalEventName = loopToStop > 1 ? `Rework #${loopToStop}: ${stopPumpEventName}` : stopPumpEventName;
-                                    const stopItemIndex = (t.sof || []).findIndex(s => s.event === finalEventName && s.loop === loopToStop);
-                                    if (stopItemIndex === -1) { t.sof!.push({ event: finalEventName, status: 'complete', time: simulatedTimeRef.current.toISOString(), user: 'AUTO', loop: loopToStop }); }
-                                }
-                            } else {
-                                if (currentOp.modality === 'vessel' && !slopsPassed) {
-                                    t.slopsTransferredTonnes = (t.slopsTransferredTonnes || 0) + increment;
-                                } else {
-                                    let slopsToAdd = 0;
-                                    if (t.slopsTransferredTonnes && t.slopsTransferredTonnes > 0) {
-                                        slopsToAdd = t.slopsTransferredTonnes;
-                                        t.slopsTransferredTonnes = 0;
-                                    }
-                                    t.transferredTonnes = (t.transferredTonnes || 0) + slopsToAdd + increment;
-                                }
-                            }
-                            return t;
-                        });
-                    }
-                    
                     const temperature = isPumping ? 45 + (Math.random() * 5 - 2.5) : 20;
                     const pressure = isPumping ? 5.5 + (Math.random() * 1 - 0.5) : 0;
                     newScadaData[line.infrastructureId] = { flowRate, pumpStatus: isPumping ? 'ON' : 'OFF', temperature, pressure };
-                    return line;
                 });
-                
-                const newStatuses = deriveStatusFromSof(currentOp);
-                if (newStatuses) {
-                    currentOp = { ...currentOp, ...newStatuses };
-                    wasModified = true;
-                }
-
-                opsCopy[opIndex] = currentOp;
             });
 
-            if (wasModified) {
-                // Use a functional update to prevent race conditions with user interactions.
-                // This merges the simulation's changes (tonnes, auto-stop events) onto the latest state.
-                setOperations(prevOps => {
-                    const simulatedOpsMap = new Map(opsCopy.map(op => [op.id, op]));
-
-                    return prevOps.map(currentOp => {
-                        const simulatedOp = simulatedOpsMap.get(currentOp.id);
-                        if (!simulatedOp) {
-                            return currentOp; // Not simulated, return as is.
-                        }
-
-                        // Create a mutable deep copy to avoid direct state mutation.
-                        const newOp = JSON.parse(JSON.stringify(currentOp));
-                        const stopPumpEventName = newOp.modality === 'vessel' ? 'STOP PUMPING' : 'Pumping Stopped';
-
-                        // Merge simulation-specific data from `simulatedOp` to `newOp`.
-                        newOp.transferPlan.forEach((line: TransferPlanItem, lineIndex: number) => {
-                            line.transfers.forEach((transfer: Transfer, transferIndex: number) => {
-                                const simulatedTransfer = simulatedOp.transferPlan?.[lineIndex]?.transfers?.[transferIndex];
-                                if (simulatedTransfer) {
-                                    // Simulation is the source of truth for transferred volumes.
-                                    transfer.transferredTonnes = simulatedTransfer.transferredTonnes;
-                                    transfer.slopsTransferredTonnes = simulatedTransfer.slopsTransferredTonnes;
-
-                                    // If simulation auto-completed a stop event, merge it.
-                                    const currentSof = transfer.sof || [];
-                                    const simulatedSof = simulatedTransfer.sof || [];
-                                    if (simulatedSof.length > currentSof.length) {
-                                        const newStopEvent = simulatedSof.find(s => 
-                                            s.event.includes(stopPumpEventName) && 
-                                            s.status === 'complete' &&
-                                            !currentSof.some(cs => cs.event === s.event && cs.loop === cs.loop)
-                                        );
-                                        if (newStopEvent) {
-                                            transfer.sof = [...currentSof, newStopEvent];
-                                        }
-                                    }
-                                }
-                            });
-                        });
-                        
-                        // Simulation also derives truck status. Apply derived status from the simulated op.
-                        const derivedStatus = deriveStatusFromSof(simulatedOp);
-                        if(derivedStatus){
-                             Object.assign(newOp, derivedStatus);
-                        }
-
-                        return newOp;
-                    });
-                });
-            }
-
-            if (tanksWereModified) {
-                setTanks(tanksCopy);
-            }
             setScadaData(newScadaData);
 
         }, 1500);
@@ -539,7 +432,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         // For leads, allow everything and reset filters.
         if (currentUser && (currentUser.role === 'Operations Lead' || currentUser.delegatedBy)) {
             setUserAllowedInfra(allTerminalInfra);
-            setWorkspaceFilter('all');
+            setWorkspaceFilter('truck');
             return;
         }
         
@@ -568,7 +461,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             if (assignedModalities && assignedModalities.length === 1) {
                 setWorkspaceFilter(assignedModalities[0]);
             } else {
-                setWorkspaceFilter('all'); // Handles 0 or >1 modalities.
+                setWorkspaceFilter('truck'); // Handles 0 or >1 modalities.
             }
         }
     }, [currentUser, settings, selectedTerminal]);
@@ -576,31 +469,38 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // EFFECT 2: Determine what's actually visible on screen based on the user's scope AND their selected UI filter.
     useEffect(() => {
-        const infraMap = currentTerminalSettings.infrastructureModalityMapping || {};
+         const infraMap = currentTerminalSettings.infrastructureModalityMapping || {};
 
-        // Filter the user's total allowed infrastructure by the currently selected UI filter.
-        const finalVisible = userAllowedInfra.filter(infraId => {
+        // All infrastructure that could be shown for this filter.
+        const allPossibleInfraForFilter = userAllowedInfra.filter(infraId => {
             if (workspaceFilter === 'all') return true;
             return infraMap[infraId] === workspaceFilter;
         });
+
+        // Check for user preference for the current terminal and filter.
+        const preferredCols = uiState.columnVisibility?.[selectedTerminal]?.[workspaceFilter];
+
+        let finalVisible: string[];
+        
+        if (preferredCols) {
+            // User has preferences. Use them, but ensure they are still valid for the current context.
+            finalVisible = preferredCols.filter(col => allPossibleInfraForFilter.includes(col));
+        } else {
+            // No preference found, default to showing all possible columns.
+            finalVisible = allPossibleInfraForFilter;
+        }
         
         // Sort the final list for a consistent display order.
-        const wharfMap = createDocklineToWharfMap(currentTerminalSettings);
-        finalVisible.sort((a, b) => {
-            const wharfA = wharfMap[a] || 'zzz';
-            const wharfB = wharfMap[b] || 'zzz';
-            if (wharfA < wharfB) return -1;
-            if (wharfA > wharfB) return 1;
-            return naturalSort(a, b);
-        });
+        finalVisible.sort(naturalSort);
 
         setVisibleInfrastructure(finalVisible);
-    }, [userAllowedInfra, workspaceFilter, settings, selectedTerminal]);
+    }, [userAllowedInfra, workspaceFilter, settings, selectedTerminal, uiState.columnVisibility]);
 
 
     const setSelectedTerminal = (terminal: string) => {
         setSelectedTerminalState(terminal);
         setWorkspaceSearchTerm('');
+        setPlanningCustomerFilter(['All']);
         switchView('dashboard');
     };
 
@@ -609,6 +509,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const getHistoryForAsset = useCallback((assetId: string, measurement: string): HistorianDataPoint[] => {
         return historianData[assetId]?.[measurement] || [];
     }, [historianData]);
+
+    const setPlanningViewMode = (mode: 'grid' | 'list' | 'kanban') => {
+        setUiState(prev => ({ ...prev, planningViewMode: mode }));
+    };
+
+    const updateColumnVisibility = (newVisibleCols: string[]) => {
+        setVisibleInfrastructure(newVisibleCols);
+        setUiState(prev => {
+            const newUiState = JSON.parse(JSON.stringify(prev));
+            if (!newUiState.columnVisibility) newUiState.columnVisibility = {};
+            if (!newUiState.columnVisibility[selectedTerminal]) newUiState.columnVisibility[selectedTerminal] = {};
+            newUiState.columnVisibility[selectedTerminal][workspaceFilter] = newVisibleCols;
+            return newUiState;
+        });
+    };
+
+    const setReportFilters = (filters: Partial<UIState['reports']>) => {
+        setUiState(prev => ({
+            ...prev,
+            reports: {
+                ...prev.reports!,
+                ...filters,
+            }
+        }));
+    };
+
+    const setCompletedOpsTab = (tab: 'report' | 'list') => {
+        setUiState(prev => ({ ...prev, completedOps: { ...prev.completedOps!, activeTab: tab } }));
+    };
 
 
     const switchView = (view: View, opId: string | null = null, lineIndex: number | null = null, transferIndex: number | null = null, opToEdit?: Operation, tankId?: string | null) => {
@@ -719,47 +648,65 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setPlacementOpId(null);
     };
 
-    const confirmPlacement = (newEta: string, newResource: string) => {
-        if (!placementOpId) return;
+    const confirmPlacement = (opId: string, newEta: string, newResource: string) => {
+        if (!opId) return;
     
-        setOperations(prevOps => prevOps.map(op => {
-            if (op.id === placementOpId) {
-                const updatedOp = JSON.parse(JSON.stringify(op));
-                
-                const originalEta = op.eta;
-                const originalResource = op.transferPlan[0]?.infrastructureId || 'Unassigned';
+        setOperations(prevOps => {
+            const opIndex = prevOps.findIndex(op => op.id === opId);
+            if (opIndex === -1) return prevOps;
     
-                updatedOp.eta = newEta;
-                updatedOp.queuePriority = new Date(newEta).getTime();
-                updatedOp.currentStatus = 'Scheduled';
-                updatedOp.truckStatus = 'Planned';
-                updatedOp.delay = { active: false }; // Clear delay if it was set
-                
-                // Clear requeue details, as it's now rescheduled
-                updatedOp.requeueDetails = undefined; 
+            const newOps = [...prevOps];
+            const opToPlace = JSON.parse(JSON.stringify(newOps[opIndex])) as Operation;
+            
+            const isRework = opToPlace.requeueDetails?.reason?.startsWith('Rework:');
+            
+            const originalEta = opToPlace.eta;
+            const originalResource = opToPlace.transferPlan[0]?.infrastructureId || 'Unassigned';
     
-                // Update infrastructure for all transfers on all lines (though for trucks it's usually one)
-                updatedOp.transferPlan = updatedOp.transferPlan.map((tp: TransferPlanItem) => ({
-                    ...tp,
-                    infrastructureId: newResource
-                }));
+            // Update common fields
+            opToPlace.eta = newEta;
+            opToPlace.queuePriority = new Date(newEta).getTime();
+            opToPlace.transferPlan = opToPlace.transferPlan.map((tp: TransferPlanItem) => ({
+                ...tp,
+                infrastructureId: newResource
+            }));
     
-                // Add activity log
-                const newLog: ActivityLogItem = {
-                    time: simulatedTimeRef.current.toISOString(),
-                    user: currentUser.name,
-                    action: 'UPDATE',
-                    details: `Rescheduled from ${formatDateTime(originalEta)} at ${formatInfraName(originalResource)} to ${formatDateTime(newEta)} at ${formatInfraName(newResource)} via board placement.`
-                };
-                updatedOp.activityHistory.push(newLog);
+            // Clear flags
+            opToPlace.delay = { active: false };
+            opToPlace.requeueDetails = undefined;
+            
+            let logDetails = '';
     
-                return updatedOp;
+            if (isRework) {
+                // A reworked truck has already arrived, so it goes back to 'Waiting' state.
+                opToPlace.status = 'active';
+                opToPlace.truckStatus = 'Waiting';
+                opToPlace.currentStatus = 'Waiting for Bay';
+                logDetails = `Reworked truck rescheduled from ${formatDateTime(originalEta)} at ${formatInfraName(originalResource)} to ${formatDateTime(newEta)} at ${formatInfraName(newResource)}. Status is now 'Waiting for Bay'.`;
+            } else {
+                // A normal reschedule goes back to a 'Planned' state.
+                opToPlace.status = 'planned';
+                opToPlace.truckStatus = 'Planned';
+                opToPlace.currentStatus = 'Scheduled';
+                logDetails = `Rescheduled from ${formatDateTime(originalEta)} at ${formatInfraName(originalResource)} to ${formatDateTime(newEta)} at ${formatInfraName(newResource)}.`;
             }
-            return op;
-        }));
+            
+            const newLog: ActivityLogItem = {
+                time: simulatedTimeRef.current.toISOString(),
+                user: currentUser.name,
+                action: 'UPDATE',
+                details: logDetails
+            };
+            opToPlace.activityHistory.push(newLog);
+    
+            newOps[opIndex] = opToPlace;
+            return newOps;
+        });
         
-        // Exit placement mode
-        setPlacementOpId(null);
+        // Exit placement mode if it was active
+        if (placementOpId === opId) {
+            setPlacementOpId(null);
+        }
     };
 
     const openAcceptNoShowModal = (opId: string) => {
@@ -806,7 +753,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 }
     
                 updatedOp.status = 'active';
-                const newStatuses = deriveStatusFromSof(updatedOp);
+                const newStatuses = deriveStatusFromSof(updatedOp, true);
     
                 newOps[opIndex] = {
                     ...updatedOp, ...newStatuses,
@@ -878,8 +825,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 const opIndex = newOps.findIndex(o => o.id === opId);
                 if (opIndex > -1) {
                     const opToUpdate = JSON.parse(JSON.stringify(newOps[opIndex])) as Operation;
+                    const wasConflicted = ['Reschedule Required', 'No Show'].includes(opToUpdate.currentStatus);
 
                     opToUpdate.transferPlan[0].infrastructureId = finalBayInfraId;
+                    
+                    if (wasConflicted) {
+                        opToUpdate.eta = simulatedTimeRef.current.toISOString();
+                        opToUpdate.queuePriority = simulatedTimeRef.current.getTime();
+                    }
 
                     const transfer = opToUpdate.transferPlan[0]?.transfers[0];
                     if (transfer?.sof) {
@@ -894,7 +847,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                         }
                     }
                     
-                    const newStatuses = deriveStatusFromSof(opToUpdate);
+                    const newStatuses = deriveStatusFromSof(opToUpdate, true);
                     if (newStatuses) {
                         Object.assign(opToUpdate, newStatuses);
                     } else {
@@ -903,6 +856,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                     }
                     
                     if (opToUpdate.requeueDetails?.priority === 'high') {
+                        opToUpdate.requeueDetails = undefined;
+                    }
+                    if (wasConflicted) {
                         opToUpdate.requeueDetails = undefined;
                     }
 
@@ -961,6 +917,50 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         closeRedirectBayModal();
         switchView('planning'); // Switch to the planning board
         startPlacementMode(opId); // Then activate placement mode
+    };
+
+    const openRequestRescheduleModal = (opId: string) => {
+        setRequestRescheduleModalState({ isOpen: true, opId });
+    };
+
+    const closeRequestRescheduleModal = () => {
+        setRequestRescheduleModalState({ isOpen: false, opId: null });
+    };
+
+    const requestReschedule = (opId: string, reason: string, notes: string) => {
+        setOperations(prevOps => {
+            const opIndex = prevOps.findIndex(op => op.id === opId);
+            if (opIndex === -1) return prevOps;
+            
+            const newOps = [...prevOps];
+            const opToUpdate = newOps[opIndex];
+            const time = simulatedTimeRef.current.toISOString();
+
+            const newLog: ActivityLogItem = {
+                time,
+                user: currentUser.name,
+                action: 'REQUEUE_REQUEST',
+                details: `Reschedule requested. Reason: ${reason}. Notes: ${notes}`
+            };
+
+            const requeueDetails: RequeueDetails = {
+                reason,
+                user: currentUser.name,
+                time,
+                details: { notes },
+                isRequest: true,
+            };
+
+            newOps[opIndex] = {
+                ...opToUpdate,
+                currentStatus: 'Reschedule Requested',
+                requeueDetails,
+                activityHistory: [...opToUpdate.activityHistory, newLog],
+            };
+            
+            return newOps;
+        });
+        closeRequestRescheduleModal();
     };
 
     const delegateRole = (targetUserName: string) => {
@@ -1247,10 +1247,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                         customer: transfer.customer || '',
                         product: transfer.product || '',
                         from: transfer.from || '',
-                        to: (details.modality === 'truck' && transfer.direction === 'Tank to Truck') ? details.transportId : '',
+                        to: transfer.to || '',
                         tonnes: transfer.tonnes || 0,
                         direction: transfer.direction || '',
-                        specialServices: [],
+                        specialServices: transfer.specialServices || [],
                         transferredTonnes: 0,
                         slopsTransferredTonnes: 0,
                         sof: SOF_EVENTS_MODALITY[details.modality].map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
@@ -1357,43 +1357,64 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const reworkTruckOperation = (opId: string, reason: string, notes: string, priority: 'high' | 'normal' = 'normal') => {
+        if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = null;
+        }
+    
         setOperations(prevOps => {
             const opIndex = prevOps.findIndex(op => op.id === opId);
             if (opIndex === -1) return prevOps;
     
             const newOps = [...prevOps];
             const opToRework = JSON.parse(JSON.stringify(newOps[opIndex])) as Operation;
-            // Assume first transfer for trucks
             const transfer = opToRework.transferPlan[0]?.transfers[0];
     
-            if (!transfer) return prevOps;
+            if (!transfer || opToRework.modality !== 'truck') return prevOps;
     
-            // Find the highest existing loop number
-            const maxLoop = Math.max(0, ...(transfer.sof || []).map(s => s.loop));
-
-            // Remove pending steps from the current loop to "insert" the rework loop before them (effectively replacing them)
-            if (transfer.sof) {
-                transfer.sof = transfer.sof.filter(s => !(s.loop === maxLoop && s.status === 'pending'));
-            }
-            
-            const newLoopNum = maxLoop + 1;
-    
-            // Create new SOF items for the new loop, starting from 'Directed to Bay'
-            // The truck events are:
-            // ['Arrived', 'Ready / Approved', 'Directed to Bay', 'On Bay', 'Pumping Started', 'Pumping Stopped', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Departed']
             const truckEvents = SOF_EVENTS_MODALITY['truck'];
-            const startIndex = truckEvents.indexOf('Directed to Bay');
-            const eventsToAdd = startIndex >= 0 ? truckEvents.slice(startIndex) : truckEvents;
-
+            const maxLoop = Math.max(1, ...(transfer.sof || []).map(s => s.loop || 1));
+            
+            const lastLoopSof = (transfer.sof || []).filter(s => s.loop === maxLoop && s.status === 'complete');
+    
+            const lastCompletedStepIndex = Math.max(
+                -1, 
+                ...lastLoopSof.map(s => {
+                    const baseEvent = s.event.replace(/^(Rework #\d+: )/, '');
+                    return truckEvents.indexOf(baseEvent);
+                })
+            );
+            
+            const pumpingStoppedIndex = truckEvents.indexOf('Pumping Stopped');
+            const hasFinishedPumping = lastCompletedStepIndex >= pumpingStoppedIndex;
+    
+            const newLoopNum = maxLoop + 1;
+            let eventsToAdd: string[];
+            
+            if (hasFinishedPumping) {
+                eventsToAdd = [
+                    'Directed to Bay',
+                    'On Bay',
+                    'Pumping Started',
+                    'Pumping Stopped',
+                    'Post-Load Weighing',
+                    'Seal Applied',
+                    'BOL Printed',
+                    'Departed',
+                ];
+            } else {
+                const startIndex = truckEvents.indexOf('Pumping Started');
+                eventsToAdd = startIndex !== -1 ? truckEvents.slice(startIndex) : [];
+            }
+    
             const newSofItems: SOFItem[] = eventsToAdd.map(event => ({
-                event: `Rework #${newLoopNum}: ${event}`, // Add prefix to event name
+                event: `Rework #${newLoopNum}: ${event}`,
                 status: 'pending',
                 time: '',
                 user: '',
                 loop: newLoopNum,
             }));
     
-            // Append new SOF items
             transfer.sof = [...(transfer.sof || []), ...newSofItems];
             
             opToRework.status = 'planned';
@@ -1418,15 +1439,89 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     
             newOps[opIndex] = opToRework;
             
-            // This needs to happen after the state update to ensure the modal gets the new requeueDetails
-            setTimeout(() => openRescheduleModal(opId, undefined, undefined, priority), 100);
-    
             return newOps;
         });
-    
-        switchView('planning'); // Navigate back to the planning board
     };
     
+    const processReworkTruck = (opId: string) => {
+        setOperations(prevOps => {
+            const opIndex = prevOps.findIndex(op => op.id === opId && op.requeueDetails?.reason?.startsWith('Rework:'));
+            if (opIndex === -1) return prevOps;
+    
+            const newOps = [...prevOps];
+            const opToProcess = JSON.parse(JSON.stringify(newOps[opIndex])) as Operation;
+    
+            const transfer = opToProcess.transferPlan[0]?.transfers[0];
+            if (transfer?.sof) {
+                const reworkLoop = transfer.sof.find(s => s.event.startsWith('Rework #'));
+                const reworkLoopNum = reworkLoop ? reworkLoop.loop : -1;
+    
+                if (reworkLoopNum > 1) {
+                    transfer.sof = transfer.sof.map(s => {
+                        if (s.loop < reworkLoopNum && s.status === 'pending') {
+                            return { ...s, status: 'skipped' };
+                        }
+                        return s;
+                    });
+                }
+            }
+    
+            opToProcess.status = 'active';
+            opToProcess.truckStatus = 'Waiting';
+            opToProcess.currentStatus = 'Waiting for Bay';
+            opToProcess.requeueDetails = undefined;
+    
+            const newLog: ActivityLogItem = {
+                time: simulatedTimeRef.current.toISOString(),
+                user: currentUser.name,
+                action: 'STATUS_UPDATE',
+                details: 'Rework process initiated. Original pending steps bypassed. Truck is now waiting for a bay assignment.'
+            };
+            opToProcess.activityHistory.push(newLog);
+    
+            newOps[opIndex] = opToProcess;
+            return newOps;
+        });
+    };
+
+    const markTruckArrived = (opId: string) => {
+        setOperations(prevOps => {
+            const opIndex = prevOps.findIndex(op => op.id === opId && op.modality === 'truck' && op.status === 'planned');
+            if (opIndex === -1) return prevOps;
+    
+            const newOps = [...prevOps];
+            const opToUpdate = JSON.parse(JSON.stringify(newOps[opIndex])) as Operation;
+            const time = simulatedTimeRef.current.toISOString();
+    
+            // Update SOF
+            const transfer = opToUpdate.transferPlan?.[0]?.transfers?.[0];
+            if (transfer?.sof) {
+                const stepIndex = transfer.sof.findIndex(s => s.event.includes('Arrived') && s.status === 'pending');
+                if (stepIndex > -1) {
+                    transfer.sof[stepIndex] = { ...transfer.sof[stepIndex], status: 'complete', time, user: currentUser.name };
+                }
+            }
+    
+            // Update statuses derived from SOF
+            const newStatuses = deriveStatusFromSof(opToUpdate, true);
+            if (newStatuses) {
+                Object.assign(opToUpdate, newStatuses);
+            } else {
+                // Fallback statuses if derivation fails
+                opToUpdate.status = 'active';
+                opToUpdate.truckStatus = 'Registered';
+                opToUpdate.currentStatus = 'Awaiting Gate Approval';
+            }
+    
+            // Add log
+            const newLog: ActivityLogItem = { time, user: currentUser.name, action: 'STATUS_UPDATE', details: 'Truck marked as arrived at terminal.' };
+            opToUpdate.activityHistory.push(newLog);
+    
+            newOps[opIndex] = opToUpdate;
+            return newOps;
+        });
+    };
+
     const acceptTruckArrival = (opId: string) => {
         setOperations(prevOps => {
             const newOps = [...prevOps];
@@ -1489,7 +1584,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const opToDirect = getOperationById(opId);
         if (!opToDirect) return;
     
-        const OCCUPYING_STATUSES = ['Directed to Bay', 'On Bay', 'Loading', 'Pumping', 'Completing'];
+        const OCCUPYING_STATUSES = ['Directed to Bay', 'On Bay', 'Loading'];
     
         const occupyingOp = operations.find(op =>
             op.id !== opId &&
@@ -1505,6 +1600,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 op: opToDirect,
                 occupiedByOp: occupyingOp,
             });
+            return;
+        }
+
+        const now = simulatedTimeRef.current.getTime();
+        const conflictingHold = holds.find(hold => 
+            hold.resource === bayInfraId &&
+            hold.status === 'approved' &&
+            !['Completed', 'Closed'].includes(hold.workOrderStatus || '') &&
+            now >= new Date(hold.startTime).getTime() &&
+            now < new Date(hold.endTime).getTime()
+        );
+
+        if (conflictingHold) {
+            alert(`Cannot direct truck to ${formatInfraName(bayInfraId)}. The bay is currently on hold for "${conflictingHold.reason}".`);
             return;
         }
     
@@ -1794,46 +1903,53 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         closeNoShowDelayModal();
     };
 
+    const clearBayForNextOp = (infraId: string) => {
+        setLastCompletedOpByInfra(prev => {
+            const newState = { ...prev };
+            delete newState[infraId];
+            return newState;
+        });
+    };
 
     const handleCompleteOperation = (opId: string) => {
-        let completedOp: Operation | undefined;
+        const opToComplete = operationsRef.current.find(op => op.id === opId);
+        if (!opToComplete) return;
+
+        const completedTime = simulatedTimeRef.current.toISOString();
+        const newLog: ActivityLogItem = {
+            time: completedTime,
+            user: currentUser.name,
+            action: 'STATUS_UPDATE',
+            details: 'Operation marked as completed.'
+        };
         
-        setOperations(prevOps => prevOps.map(op => {
-            if (op.id === opId) {
-                const completedTime = simulatedTimeRef.current.toISOString();
-                const newLog: ActivityLogItem = {
-                    time: completedTime,
-                    user: currentUser.name,
-                    action: 'STATUS_UPDATE',
-                    details: 'Operation marked as completed.'
-                };
-                
-                let opWithCycleTime = calculateAndSetCycleTime(op);
+        const opWithCycleTime = calculateAndSetCycleTime(opToComplete);
 
-                completedOp = {
-                    ...opWithCycleTime,
-                    status: 'completed',
-                    currentStatus: 'Completed',
-                    completedTime: completedTime,
-                    activityHistory: [...op.activityHistory, newLog],
-                };
-                return completedOp;
+        const completedOp: Operation = {
+            ...opWithCycleTime,
+            status: 'completed',
+            currentStatus: 'Completed',
+            completedTime: completedTime,
+            activityHistory: [...opToComplete.activityHistory, newLog],
+        };
+        
+        // Perform all state updates together. React 18 will batch them.
+        setOperations(prevOps => prevOps.map(op => (op.id === opId ? completedOp : op)));
+        
+        // Side effects using the newly created completedOp object.
+        if (completedOp.modality === 'truck') {
+            const infraId = completedOp.transferPlan[0]?.infrastructureId;
+            if (infraId) {
+                setLastCompletedOpByInfra(prev => ({ ...prev, [infraId]: completedOp.id }));
             }
-            return op;
-        }));
-
-        // Post-completion logic
-        setTimeout(() => {
-            if (completedOp) {
-                completedOp.transferPlan.forEach(line => {
-                    const lastTransfer = line.transfers[line.transfers.length - 1];
-                    if (lastTransfer) {
-                        updateInfrastructureLastProduct(completedOp!.terminal, line.infrastructureId, lastTransfer.product);
-                    }
-                });
-                switchView('active-operations-list');
+        }
+        
+        completedOp.transferPlan.forEach(line => {
+            const lastTransfer = line.transfers[line.transfers.length - 1];
+            if (lastTransfer) {
+                updateInfrastructureLastProduct(completedOp.terminal, line.infrastructureId, lastTransfer.product);
             }
-        }, 100);
+        });
     };
 
     const updateCompletedOperationDetails = (opId: string, opUpdates: Partial<Operation>, transferId?: string, transferUpdates?: Partial<Transfer>) => {
@@ -1933,7 +2049,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
     };
 
-    const updateVesselServiceStatus = (opId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => {
+    const updateOperationServiceStatus = (opId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => {
         setOperations(prevOps => {
             const opIndex = prevOps.findIndex(op => op.id === opId);
             if (opIndex === -1) return prevOps;
@@ -1948,7 +2064,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 }
                 opToUpdate.specialRequirements[serviceIndex].data.status = status;
 
-                addActivityLog(opId, 'UPDATE', `Status for service '${serviceName}' updated to ${status}.`);
+                addActivityLog(opId, 'UPDATE', `Status for vessel service '${serviceName}' updated to ${status}.`);
+            }
+            
+            newOps[opIndex] = opToUpdate;
+            return newOps;
+        });
+    };
+
+    const updateTransferServiceStatus = (opId: string, transferId: string, serviceName: string, status: 'pending' | 'confirmed' | 'complete') => {
+        setOperations(prevOps => {
+            const opIndex = prevOps.findIndex(op => op.id === opId);
+            if (opIndex === -1) return prevOps;
+            
+            const newOps = [...prevOps];
+            const opToUpdate = JSON.parse(JSON.stringify(newOps[opIndex])) as Operation;
+            
+            let transferFound = false;
+            let product = 'Unknown Product';
+            for (const line of opToUpdate.transferPlan) {
+                const transferIndex = line.transfers.findIndex(t => t.id === transferId);
+                if (transferIndex > -1) {
+                    const serviceIndex = (line.transfers[transferIndex].specialServices || []).findIndex(s => s.name === serviceName);
+                    if (serviceIndex > -1) {
+                        if (!line.transfers[transferIndex].specialServices[serviceIndex].data) {
+                            line.transfers[transferIndex].specialServices[serviceIndex].data = {};
+                        }
+                        line.transfers[transferIndex].specialServices[serviceIndex].data.status = status;
+                        product = line.transfers[transferIndex].product;
+                        transferFound = true;
+                        break;
+                    }
+                }
+            }
+
+            if (transferFound) {
+                addActivityLog(opId, 'UPDATE', `Status for service '${serviceName}' (${product}) updated to ${status}.`);
             }
             
             newOps[opIndex] = opToUpdate;
@@ -1973,7 +2124,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         settings, setSettings,
         holds, setHolds,
         scadaData,
-        uiState, setUiState,
+        uiState,
+        setPlanningViewMode,
+        updateColumnVisibility,
+        setReportFilters, setCompletedOpsTab,
         online,
         lastUpdated,
         selectedTerminal, setSelectedTerminal,
@@ -1993,12 +2147,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         goBack,
         workspaceFilter, setWorkspaceFilter,
         workspaceSearchTerm, setWorkspaceSearchTerm,
-        visibleInfrastructure, setVisibleInfrastructure,
+        visibleInfrastructure,
         rescheduleModalData, openRescheduleModal, closeRescheduleModal,
         isNewOpModalOpen, newOpInitialData, openNewOpModal, closeNewOpModal,
         noShowDelayModalState, closeNoShowDelayModal, handleConfirmNoShowDelay,
         acceptNoShowModalState, openAcceptNoShowModal, closeAcceptNoShowModal, handleConfirmAcceptNoShow,
         placementOpId, startPlacementMode, cancelPlacementMode, confirmPlacement,
+        isSchedulerMode, setIsSchedulerMode,
         editingOp, setEditingOp,
         currentUser, users, setUsers, setCurrentUser,
         delegateRole, revokeDelegation,
@@ -2009,6 +2164,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         requeueTruckOperation,
         requeueOperation,
         reworkTruckOperation,
+        processReworkTruck,
+        markTruckArrived,
         acceptTruckArrival,
         callOffTruck,
         directTruckToBay,
@@ -2026,10 +2183,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         handleCompleteOperation,
         updateCompletedOperationDetails,
         updatePreArrivalCheck,
-        updateVesselServiceStatus,
+        updateOperationServiceStatus,
+        updateTransferServiceStatus,
         conflictData,
         closeConflictModal,
         resolveAndRescheduleConflicts,
+        // FIX: Remove the `as any` cast by using the corrected type.
         directToBayModalState,
         closeDirectToBayModal,
         handleConfirmBayAction,
@@ -2043,6 +2202,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setManpowerSchedule,
         updateUserShift,
         updateUserAssignments,
+        lastCompletedOpByInfra,
+        clearBayForNextOp,
+        planningCustomerFilter,
+        setPlanningCustomerFilter,
+        requestRescheduleModalState,
+        openRequestRescheduleModal,
+        closeRequestRescheduleModal,
+        requestReschedule,
     };
     
     return <AppContext.Provider value={contextValue}>{children}</AppContext.Provider>;

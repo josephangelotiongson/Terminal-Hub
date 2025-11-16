@@ -1,7 +1,7 @@
 import React, { useMemo, useContext } from 'react';
 import Modal from './Modal';
-import { Operation, SOFItem } from '../types';
-import { formatInfraName, calculateOperationValue, formatCurrency } from '../utils/helpers';
+import { Operation, ActivityLogItem } from '../types';
+import { formatInfraName, calculateOperationValue, formatCurrency, formatDateTime, calculateActualDuration } from '../utils/helpers';
 import { AppContext } from '../context/AppContext';
 
 interface CompletedOpDetailsModalProps {
@@ -13,7 +13,6 @@ interface CompletedOpDetailsModalProps {
 const FinancialSummary: React.FC<{ op: Operation }> = ({ op }) => {
     const { settings } = useContext(AppContext)!;
     const { throughputValue, servicesValue, totalValue } = calculateOperationValue(op, settings);
-    const allServices = op.transferPlan.flatMap(tp => tp.transfers.flatMap(t => t.specialServices || []));
 
     return (
         <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
@@ -36,9 +35,33 @@ const FinancialSummary: React.FC<{ op: Operation }> = ({ op }) => {
     );
 };
 
+const VarianceDisplay: React.FC<{ planned: number; actual: number; unit: string; positiveIsGood?: boolean }> = ({ planned, actual, unit, positiveIsGood = false }) => {
+    const diff = actual - planned;
+    if (isNaN(diff)) return null;
+
+    const isPositive = diff >= 0;
+    const isNeutral = Math.abs(diff) < 0.01;
+
+    let colorClass = 'text-slate-500';
+    if (!isNeutral) {
+        colorClass = (isPositive && positiveIsGood) || (!isPositive && !positiveIsGood) ? 'text-green-600' : 'text-red-600';
+    }
+    
+    return (
+        <div className={`text-right ${colorClass}`}>
+            <p className="font-mono">{actual.toFixed(2)} {unit}</p>
+            <p className="text-xs font-semibold">
+                ({isPositive && !isNeutral ? '+' : ''}{diff.toFixed(2)} {unit})
+            </p>
+        </div>
+    );
+};
+
 const CompletedOpDetailsModal: React.FC<CompletedOpDetailsModalProps> = ({ isOpen, onClose, operation }) => {
     const { currentUser } = useContext(AppContext)!;
     const isCommercials = currentUser.role === 'Commercials';
+
+    const actualDuration = useMemo(() => operation ? calculateActualDuration(operation) : 0, [operation]);
 
     if (!isOpen || !operation) {
         return null;
@@ -48,8 +71,6 @@ const CompletedOpDetailsModal: React.FC<CompletedOpDetailsModalProps> = ({ isOpe
     const eventTime = isCancelled ? operation.cancellationDetails?.time : operation.completedTime;
     const eventLabel = isCancelled ? 'Cancellation Time' : 'Completed Time';
     
-    const wasStarted = operation.transferPlan.some(tp => tp.transfers.some(t => (t.sof || []).some(s => s.status === 'complete')));
-
     return (
         <Modal
             isOpen={isOpen}
@@ -72,82 +93,40 @@ const CompletedOpDetailsModal: React.FC<CompletedOpDetailsModalProps> = ({ isOpe
                         </div>
                     )}
                 </div>
-                
-                {isCommercials && <FinancialSummary op={operation} />}
 
-                {operation.modality === 'truck' && (operation.licensePlate || operation.driverName || operation.driverPhone || operation.driverEmail) && (
-                    <div>
-                        <h4 className="font-semibold text-base text-text-primary mb-2">Truck & Driver Details</h4>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 p-3 border rounded-md bg-slate-50">
-                            {operation.licensePlate && <div className="truncate"><p className="font-semibold text-text-secondary text-xs">License Plate</p><p className="font-mono text-sm">{operation.licensePlate}</p></div>}
-                            {operation.driverName && <div className="truncate"><p className="font-semibold text-text-secondary text-xs">Driver Name</p><p className="text-sm">{operation.driverName}</p></div>}
-                            {operation.driverPhone && <div className="truncate"><p className="font-semibold text-text-secondary text-xs">Driver Phone</p><p className="text-sm">{operation.driverPhone}</p></div>}
-                            {operation.driverEmail && <div className="truncate"><p className="font-semibold text-text-secondary text-xs">Driver Email</p><p className="text-sm">{operation.driverEmail}</p></div>}
-                        </div>
-                    </div>
-                )}
-
-                <div>
-                    <h4 className="font-semibold text-base text-text-primary mb-2">Transfer Plan Summary</h4>
+                 <div className="card p-4 bg-slate-50">
+                    <h3 className="font-bold text-lg mb-3">Planned vs. Actual</h3>
                     <div className="space-y-4">
-                        {operation.transferPlan.map((line, index) => (
-                            <div key={index} className="p-3 border rounded-md bg-slate-50">
-                                <p className="font-bold text-text-secondary">Infrastructure: {formatInfraName(line.infrastructureId)}</p>
-                                {line.transfers.map((t, tIndex) => (
-                                    <div key={tIndex} className="mt-2 pt-2 border-t">
-                                        <p className="font-semibold">{t.product} ({(t.transferredTonnes || t.tonnes).toLocaleString()} T)</p>
-                                        <p className="text-text-secondary">{t.customer}</p>
-                                        <div className="flex items-center gap-2 mt-1 text-sm">
-                                            <span className="font-mono">{t.from}</span>
-                                            <i className="fas fa-long-arrow-alt-right text-text-tertiary"></i>
-                                            <span className="font-mono">{t.to}</span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-                </div>
+                        {/* Duration */}
+                        <div className="grid grid-cols-3 items-center">
+                            <div className="col-span-1 font-semibold">Duration</div>
+                            <div className="col-span-1 text-right font-mono">{operation.durationHours?.toFixed(2) || '0.00'} hrs</div>
+                            <div className="col-span-1"><VarianceDisplay planned={operation.durationHours || 0} actual={actualDuration} unit="hrs" positiveIsGood={false} /></div>
+                        </div>
 
-                {wasStarted && operation.transferPlan.map((line, lineIndex) => (
-                    <div key={line.infrastructureId}>
-                        {line.transfers.map((transfer, transferIndex) => {
-                            const loops: { [loopNum: number]: SOFItem[] } = {};
-                            (transfer.sof || []).forEach(item => {
-                                if (!loops[item.loop]) loops[item.loop] = [];
-                                loops[item.loop].push(item);
-                            });
-                            const sofLoops = Object.entries(loops).map(([loopNum, items]) => ({ loopNum: parseInt(loopNum), items: items.sort((a,b) => new Date(a.time).getTime() - new Date(b.time).getTime()) })).sort((a, b) => a.loopNum - b.loopNum);
-
+                        {/* Volume per transfer */}
+                        {operation.transferPlan.flatMap(line => line.transfers).map(transfer => {
+                            const actualVolume = transfer.loadedWeight || transfer.transferredTonnes || 0;
                             return (
-                                <div key={transferIndex} className="mt-4">
-                                    <h4 className="font-semibold text-base text-text-primary mb-2">Statement of Facts Summary: {transfer.product}</h4>
-                                    <div className="space-y-4">
-                                        {sofLoops.map(({ loopNum, items }) => (
-                                            <div key={loopNum} className="p-3 border rounded-md">
-                                                <p className="font-bold text-text-secondary mb-2">{loopNum > 1 ? `Rework #${loopNum}` : 'Initial Attempt'}</p>
-                                                <div className="activity-log max-h-40 overflow-y-auto">
-                                                    {items.filter(item => item.status === 'complete').map(item => (
-                                                        <div key={item.event} className="activity-log-item !text-xs">
-                                                            <span className="time">{new Date(item.time).toLocaleString()}</span>
-                                                            <span className="flex-1">{item.event}</span>
-                                                            <span className="user">({item.user})</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        ))}
+                                <div key={transfer.id} className="grid grid-cols-3 items-center border-t pt-2">
+                                    <div className="col-span-1">
+                                        <p className="font-semibold truncate">{transfer.product}</p>
+                                        <p className="text-xs text-text-secondary truncate">{transfer.customer}</p>
                                     </div>
+                                    <div className="col-span-1 text-right font-mono">{transfer.tonnes.toFixed(2)} T</div>
+                                    <div className="col-span-1"><VarianceDisplay planned={transfer.tonnes} actual={actualVolume} unit="T" positiveIsGood={true} /></div>
                                 </div>
                             );
                         })}
                     </div>
-                ))}
+                </div>
 
-                 <div>
+                {isCommercials && <FinancialSummary op={operation} />}
+                
+                <div>
                     <h4 className="font-semibold text-base text-text-primary mb-2">Full Activity History</h4>
                     <div className="space-y-2 max-h-48 overflow-y-auto border p-2 rounded-md bg-slate-50">
-                        {operation.activityHistory.slice().reverse().map((log, index) => (
+                        {operation.activityHistory.slice().reverse().map((log: ActivityLogItem, index: number) => (
                             <div key={index} className="text-xs p-1.5 rounded bg-white shadow-sm">
                                 <div className="flex justify-between items-baseline">
                                     <div className="flex items-baseline min-w-0">

@@ -1,5 +1,6 @@
 
 
+
 import { Operation, SOFItem, Transfer, AppSettings, Modality, CalibrationPoint, TerminalSettings, Hold, OperationStatus, User } from '../types';
 import { SOF_EVENTS_MODALITY, VESSEL_COMMON_EVENTS, VESSEL_COMMODITY_EVENTS } from '../constants';
 
@@ -39,6 +40,19 @@ export const getIcon = (modality: Modality): string => {
 
 
 export const getOperationDurationHours = (op: Operation): number => {
+    if (op.modality === 'vessel' && op.transferPlan?.some(l => l.transfers?.length > 0)) {
+        const totalTonnes = op.transferPlan.reduce((sum, line) => 
+            sum + line.transfers.reduce((s, t) => s + (t.tonnes || 0), 0), 
+        0);
+        // Assuming an average pump rate of 1000 T/hr + some setup/teardown time
+        const PUMP_RATE = 1000;
+        const SETUP_TEARDOWN_HOURS = 2;
+        const cleaningHours = op.transferPlan.reduce((sum, line) =>
+            sum + line.transfers.filter(t => t.preTransferCleaningSof).length, 0
+        ); // Add 1 hour for each cleaning
+        return (totalTonnes / PUMP_RATE) + SETUP_TEARDOWN_HOURS + cleaningHours;
+    }
+
     if (op.durationHours && typeof op.durationHours === 'number' && op.durationHours > 0) {
         return op.durationHours;
     }
@@ -118,28 +132,21 @@ export const canCreateHold = (user: User): boolean => {
 };
 
 export const canEditPlan = (user: User): boolean => {
-    // User request: "Ops lead and dispatcher can ... edit the plan of for the truck."
-    // This also implicitly allows editing other plans, which is a reasonable default.
-    return ['Operations Lead', 'Dispatch'].includes(user.role);
+    return ['Operations Lead', 'Dispatch', 'Terminal Planner'].includes(user.role);
 };
 
-export const canReschedule = (user: User, op: Operation | null): boolean => {
-    if (!op) {
-        // Fallback for generic cases where op is not available
-        return ['Operations Lead', 'Dispatch', 'Terminal Planner'].includes(user.role);
-    }
-    // User request: "Ops lead and dispatcher can reschedule ... for the truck."
-    if (op.modality === 'truck') {
-        return ['Operations Lead', 'Dispatch'].includes(user.role);
-    }
-    // For other modalities, allow Terminal Planner as well
+export const canReschedule = (user: User): boolean => {
     return ['Operations Lead', 'Dispatch', 'Terminal Planner'].includes(user.role);
+};
+
+export const canRequestReschedule = (user: User): boolean => {
+    return user.role === 'Operator';
 };
 
 export const canPerformSofAction = (user: User, opModality: Modality, sofEventName: string): boolean => {
     const eventBaseName = sofEventName.replace(/^(Rework #\d+: )?(.*)$/, '$2');
 
-    if (user.role === 'Operations Lead') {
+    if (user.role === 'Operations Lead' || user.delegatedBy) {
         return true;
     }
 
@@ -166,6 +173,10 @@ export const canDispatchTrucks = (user: User): boolean => {
     return ['Operations Lead', 'Dispatch'].includes(user.role);
 };
 
+export const canClearBay = (user: User): boolean => {
+    return ['Operations Lead', 'Dispatch'].includes(user.role);
+};
+
 export const canApproveGate = (user: User): boolean => {
     return ['Operations Lead', 'Dispatch'].includes(user.role);
 };
@@ -185,27 +196,65 @@ export const calculateOperationValue = (operation: Operation, settings: AppSetti
     let throughputValue = 0;
     let servicesValue = 0;
 
-    // FIX: Add array check for safety when iterating
     (operation.transferPlan || []).forEach(tp => {
-        // FIX: Add array check for safety when iterating
         (tp.transfers || []).forEach(t => {
-            // Calculate throughput value
             const rate = customerRates?.[t.customer]?.[t.product]?.ratePerTonne || 0;
-            const tonnes = operation.status === 'completed' ? t.tonnes : (t.transferredTonnes ?? t.tonnes);
-            throughputValue += tonnes * rate;
+            
+            // Determine the billable tonnes. For completed ops, it's what was actually moved.
+            let billableTonnes = 0;
+            if (operation.status === 'completed') {
+                billableTonnes = t.loadedWeight || t.transferredTonnes || t.tonnes || 0;
+            } else {
+                // For active ops, it's what has been transferred so far.
+                 billableTonnes = (t.transferredTonnes || 0) + (t.slopsTransferredTonnes || 0);
+            }
 
-            // Calculate services value
+            throughputValue += billableTonnes * rate;
+
             (t.specialServices || []).forEach(s => {
                 servicesValue += serviceRates?.[s.name] || 0;
             });
         });
     });
+    
+    // Add vessel-level services
+    (operation.specialRequirements || []).forEach(s => {
+        servicesValue += serviceRates?.[s.name] || 0;
+    });
+
+    const labourRecovery = operation.labourRecovery || 0;
+    const otherRecoveries = operation.otherRecoveries || 0;
 
     return {
         throughputValue,
         servicesValue,
-        totalValue: throughputValue + servicesValue
+        totalValue: throughputValue + servicesValue + labourRecovery + otherRecoveries
     };
+};
+
+export const calculateActualDuration = (op: Operation): number => {
+    if (!op.completedTime) return 0;
+
+    const allSofs = [
+        ...(op.sof || []),
+        ...op.transferPlan.flatMap(tp => tp.transfers.flatMap(t => t.sof || []))
+    ].filter(s => s.status === 'complete' && s.time);
+
+    if (allSofs.length === 0) {
+        // Fallback to ETA if no SOF events exist
+        return (new Date(op.completedTime).getTime() - new Date(op.eta).getTime()) / (3600 * 1000);
+    }
+  
+    // Find the earliest SOF time
+    const firstSofTime = allSofs.map(s => new Date(s.time).getTime()).reduce((min, t) => Math.min(min, t), Infinity);
+    const lastSofTime = new Date(op.completedTime).getTime();
+
+    if (isFinite(firstSofTime) && lastSofTime > firstSofTime) {
+        return (lastSofTime - firstSofTime) / (3600 * 1000);
+    }
+    
+    // Fallback if SOF times are weird
+    return (new Date(op.completedTime).getTime() - new Date(op.eta).getTime()) / (3600 * 1000);
 };
 
 export const calculateOperationProgress = (op: Operation | null, infraId?: string): { completed: number, total: number, percentage: number } => {
@@ -238,7 +287,11 @@ export const calculateOperationProgress = (op: Operation | null, infraId?: strin
 
     // If the operation is marked complete, we assume 100% of the planned volume was transferred.
     if (op.status === 'completed') {
-        transferredTonnes = totalTonnes;
+        if (op.modality === 'truck') {
+            transferredTonnes = transfersToConsider.reduce((sum, t) => sum + (t.loadedWeight || t.transferredTonnes || t.tonnes || 0), 0);
+        } else {
+            transferredTonnes = transfersToConsider.reduce((sum, t) => sum + (t.transferredTonnes || t.tonnes || 0), 0);
+        }
     }
 
     // Clamp transferred tonnes to not exceed total planned tonnes.
@@ -494,7 +547,7 @@ export const validateOperationPlan = (op: Operation, terminalSettings: TerminalS
  */
 export const deriveStatusFromSof = (op: Operation, force: boolean = false): Partial<Operation> | null => {
     if (!force) {
-        const stickyIssueStatuses = ['Reschedule Required', 'No Show', 'Delayed'];
+        const stickyIssueStatuses = ['Reschedule Required', 'No Show', 'Delayed', 'Reschedule Requested'];
         if (stickyIssueStatuses.includes(op.currentStatus) || op.delay?.active) {
             return null;
         }
@@ -505,16 +558,21 @@ export const deriveStatusFromSof = (op: Operation, force: boolean = false): Part
     switch (op.modality) {
         case 'truck': {
             const transfer = op.transferPlan?.[0]?.transfers?.[0];
-            if (!transfer?.sof) return null;
+            if (!transfer?.sof || transfer.sof.length === 0) return null;
 
+            const maxLoop = Math.max(1, ...transfer.sof.map(s => s.loop));
+            const currentLoopSof = transfer.sof.filter(s => s.loop === maxLoop);
             const truckSofEventSequence = SOF_EVENTS_MODALITY['truck'];
-            const completedSofEvents = new Set(
-                transfer.sof.filter(s => s.status === 'complete').map(s => s.event.replace(/^(Rework #\d+: )/, ''))
+
+            const completedEventsInCurrentLoop = new Set(
+                currentLoopSof
+                    .filter(s => s.status === 'complete')
+                    .map(s => s.event.replace(/^(Rework #\d+: )/, ''))
             );
 
             let latestCompletedStep: string | null = null;
             for (let i = truckSofEventSequence.length - 1; i >= 0; i--) {
-                if (completedSofEvents.has(truckSofEventSequence[i])) {
+                if (completedEventsInCurrentLoop.has(truckSofEventSequence[i])) {
                     latestCompletedStep = truckSofEventSequence[i];
                     break;
                 }
@@ -537,6 +595,7 @@ export const deriveStatusFromSof = (op: Operation, force: boolean = false): Part
             break;
         }
         case 'vessel': {
+            // This logic is simple as rework is not implemented for vessels yet. It can be improved later.
             const completedCommonSof = new Set((op.sof || []).filter(s => s.status === 'complete').map(s => s.event));
             const isPumping = op.transferPlan.some(tp => tp.transfers.some(t => (t.sof || []).some(s => s.event.includes('START PUMPING') && s.status === 'complete' && !(t.sof || []).some(s2 => s2.event.includes('STOP PUMPING') && s2.status === 'complete'))));
 
@@ -552,6 +611,7 @@ export const deriveStatusFromSof = (op: Operation, force: boolean = false): Part
             break;
         }
         case 'rail': {
+            // This logic is simple as rework is not implemented for rail yet.
             const transfer = op.transferPlan?.[0]?.transfers?.[0];
             if (!transfer?.sof) return null;
             const railSofEvents = SOF_EVENTS_MODALITY['rail'];
@@ -621,7 +681,7 @@ export const getLatestSofTimestamp = (op: Operation): string => {
 
 export const getOperationColorClass = (op: Operation): string => {
     // Priority 1: Issues that require attention
-    if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected') {
+    if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected' || op.currentStatus === 'Reschedule Requested') {
         return 'status-rejected'; // Red
     }
     // Priority 2: Completed operations
@@ -666,7 +726,7 @@ export const getOperationColorClass = (op: Operation): string => {
 
 export const getOperationBorderColorClass = (op: Operation): string => {
     // Priority 1: Issues that require attention
-    if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected') {
+    if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected' || op.currentStatus === 'Reschedule Requested') {
         return 'border-rose-700'; // Red
     }
     // Priority 2: Completed operations
@@ -716,7 +776,9 @@ export const createDocklineToWharfMap = (terminalSettings: TerminalSettings): Re
     const mapping: Record<string, string> = {};
     const wharfMapping = terminalSettings.wharfDocklineMapping || {};
     Object.entries(wharfMapping).forEach(([wharf, docklines]) => {
-        (docklines || []).forEach(id => { mapping[id] = wharf; });
+        if (Array.isArray(docklines)) {
+            docklines.forEach(id => { mapping[id] = wharf; });
+        }
     });
     return mapping;
 };

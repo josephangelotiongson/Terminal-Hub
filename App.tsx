@@ -1,5 +1,6 @@
 
 
+
 import React, { useContext } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -15,10 +16,11 @@ import MasterData from './components/MasterData';
 import OutagePlanning from './components/OutagePlanning'; // Import the new component
 import Maintenance from './components/Maintenance'; // Import the new component
 import RescheduleDetailsModal from './components/RescheduleDetailsModal';
+import RequestRescheduleModal from './components/RequestRescheduleModal';
 import ProductTransferDetails from './components/ProductTransferDetails'; // Import the new component
 import ConflictResolutionModal from './components/ConflictResolutionModal';
 import NewOperationModal from './components/NewOperationModal';
-import TankStatus from './components/TankStatus';
+import TankStatus from './components/TankHistory';
 import TankStatusDetails from './components/TankStatusDetails';
 import ScadaModal from './components/ScadaModal'; // New import
 import UserPermissions from './components/UserPermissions';
@@ -28,13 +30,12 @@ import DelayModal from './components/DelayModal';
 import RedirectBayModal from './components/RedirectBayModal';
 import AcceptNoShowModal from './components/AcceptNoShowModal';
 import { AppProvider, AppContext } from './context/AppContext';
-import PlanningList from './components/PlanningList';
 
 const AppContent: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return null; // Should be wrapped in provider
 
-    const { currentView, isSidebarOpen, setIsSidebarOpen, rescheduleModalData, closeRescheduleModal, getOperationById, isNewOpModalOpen, closeNewOpModal, directToBayModalState, closeDirectToBayModal, handleConfirmBayAction, noShowDelayModalState, closeNoShowDelayModal, handleConfirmNoShowDelay, acceptNoShowModalState, closeAcceptNoShowModal, handleConfirmAcceptNoShow } = context;
+    const { currentView, isSidebarOpen, setIsSidebarOpen, rescheduleModalData, closeRescheduleModal, getOperationById, isNewOpModalOpen, closeNewOpModal, directToBayModalState, closeDirectToBayModal, handleConfirmBayAction, noShowDelayModalState, closeNoShowDelayModal, handleConfirmNoShowDelay, acceptNoShowModalState, closeAcceptNoShowModal, handleConfirmAcceptNoShow, requestRescheduleModalState, closeRequestRescheduleModal, requestReschedule } = context;
     
     const rescheduleOp = getOperationById(rescheduleModalData.opId);
     const acceptNoShowOp = getOperationById(acceptNoShowModalState.opId);
@@ -75,6 +76,14 @@ const AppContent: React.FC = () => {
                     onConfirm={handleConfirmBayAction}
                     operation={directToBayModalState.op}
                     isRevert={directToBayModalState.isRevert}
+                />
+            )}
+            {requestRescheduleModalState.opId && (
+                <RequestRescheduleModal
+                    isOpen={requestRescheduleModalState.isOpen}
+                    opId={requestRescheduleModalState.opId}
+                    onClose={closeRequestRescheduleModal}
+                    onSave={requestReschedule}
                 />
             )}
             {rescheduleOp && (

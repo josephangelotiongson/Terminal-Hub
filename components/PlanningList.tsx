@@ -1,222 +1,279 @@
 
-import React, { useContext, useMemo, useState } from 'react';
+import React, { useContext, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
-import { Operation, Modality } from '../types';
-import { validateOperationPlan, canApproveGate } from '../utils/helpers';
+import { Operation, SOFItem } from '../types';
+import { canApproveGate, getIcon } from '../utils/helpers';
 
-const PRE_ARRIVAL_SERVICES_CHECKLIST = ['Aquis Quarantine', 'Customs arrival', 'Marpol surveyor', 'Ship stability/positioning'];
-const GENERAL_PRE_ARRIVAL_CHECKS = ['Customer Confirmation', 'Documents Received'];
+const getArrivalStatus = (eta: string, now: Date): { label: string; colorClass: string; textColor: string; } => {
+    const etaTime = new Date(eta).getTime();
+    const nowTime = now.getTime();
+    const fifteenMinutes = 15 * 60 * 1000;
+    const oneHour = 60 * 60 * 1000;
 
-const getIcon = (modality: Modality) => {
-    if (modality === 'truck') return 'fa-truck';
-    if (modality === 'rail') return 'fa-train';
-    return 'fa-ship';
+    if (etaTime < nowTime - fifteenMinutes) {
+        return { label: 'Overdue', colorClass: 'bg-red-100', textColor: 'text-red-800' };
+    }
+    if (etaTime >= nowTime - fifteenMinutes && etaTime < nowTime + oneHour) {
+        return { label: 'Due for Arrival', colorClass: 'bg-blue-100', textColor: 'text-blue-800' };
+    }
+    if (etaTime > nowTime + (4 * oneHour)) {
+        return { label: 'Early', colorClass: 'bg-green-100', textColor: 'text-green-800' };
+    }
+    return { label: 'Upcoming', colorClass: 'bg-slate-100', textColor: 'text-slate-800' };
 };
 
-const ChecklistRow: React.FC<{ op: Operation }> = ({ op }) => {
-    const { switchView, settings, currentTerminalSettings, holds, updatePreArrivalCheck, updateVesselServiceStatus, acceptTruckArrival, currentUser } = useContext(AppContext)!;
-    const [isExpanded, setIsExpanded] = useState(false);
+const UpcomingOpRow: React.FC<{ op: Operation; onMarkArrived: (opId: string) => void }> = ({ op, onMarkArrived }) => {
+    const { simulatedTime, currentUser, switchView } = useContext(AppContext)!;
 
-    const canApprove = canApproveGate(currentUser);
-    const isRegisteredTruck = op.modality === 'truck' && op.truckStatus === 'Registered';
+    const canMarkArrived = canApproveGate(currentUser);
+    const firstTransfer = op.transferPlan?.flatMap(tp => tp.transfers)[0];
+    const arrivalStatus = getArrivalStatus(op.eta, simulatedTime);
 
-    const validation = useMemo(() => {
-        const activeHolds = holds.filter(h => h.status === 'approved' && h.workOrderStatus !== 'Closed');
-        return validateOperationPlan(op, currentTerminalSettings, settings, activeHolds);
-    }, [op, currentTerminalSettings, settings, holds]);
-
-    const firstTransfer = op.transferPlan?.[0]?.transfers?.[0];
-
-    const { allChecks, progress } = useMemo(() => {
-        const preArrivalServices = (op.specialRequirements || []).filter(s => PRE_ARRIVAL_SERVICES_CHECKLIST.includes(s.name));
-    
-        const baseChecks = [
-            { name: 'Plan Validated', status: validation.isValid ? 'complete' : 'pending', type: 'system' },
-            ...GENERAL_PRE_ARRIVAL_CHECKS.map(name => ({
-                name,
-                status: op.preArrivalChecks?.[name]?.status || 'pending',
-                type: 'general'
-            })),
-            ...preArrivalServices.map(service => ({
-                name: service.name,
-                status: service.data?.status || 'pending',
-                type: 'service'
-            }))
-        ];
-
-        const finalChecks = op.modality === 'truck'
-            ? baseChecks.filter(check => !['Plan Validated', 'Customer Confirmation', 'Documents Received'].includes(check.name))
-            : baseChecks;
-        
-        const completedChecks = finalChecks.filter(c => c.status === 'complete' || c.status === 'confirmed').length;
-        const progressPercentage = finalChecks.length > 0 ? (completedChecks / finalChecks.length) * 100 : 100;
-        
-        return { allChecks: finalChecks, progress: progressPercentage };
-    }, [op, validation.isValid]);
-
-    const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
-        const baseClass = "px-2 py-0.5 text-xs font-semibold rounded-full";
-        switch (status) {
-            case 'complete': return <span className={`${baseClass} bg-green-100 text-green-800`}>Complete</span>;
-            case 'confirmed': return <span className={`${baseClass} bg-blue-100 text-blue-800`}>Confirmed</span>;
-            case 'pending': return <span className={`${baseClass} bg-yellow-100 text-yellow-800`}>Pending</span>;
-            default: return <span className={`${baseClass} bg-slate-100 text-slate-800`}>{status}</span>;
-        }
+    const borderColors: { [key: string]: string } = {
+        'Overdue': 'border-red-400',
+        'Due for Arrival': 'border-blue-400',
+        'Early': 'border-green-400',
+        'Upcoming': 'border-slate-300',
     };
 
     return (
-        <div className="card !p-0">
+        <div className={`card !p-0 flex items-center border-l-4 ${borderColors[arrivalStatus.label]}`}>
             <div 
-                className="flex items-center p-3 cursor-pointer hover:bg-slate-50"
-                onClick={() => switchView(isRegisteredTruck ? 'operation-details' : 'operation-plan', op.id)}
+                className="flex-grow p-3 cursor-pointer hover:bg-slate-50"
+                onClick={() => switchView('operation-plan', op.id)}
             >
-                <div className="flex items-center gap-4 flex-grow min-w-0">
-                    <i className={`fas ${getIcon(op.modality)} text-brand-dark text-xl w-6 text-center`}></i>
+                <div className="grid grid-cols-[auto,1fr,1fr,1.5fr,1fr] items-center gap-4">
+                    <i className={`fas ${getIcon(op.modality)} text-2xl text-text-secondary w-8 text-center`} title={op.modality}></i>
                     <div className="min-w-0">
-                        {op.modality === 'truck' && op.licensePlate ? (
-                            <>
-                                <p className="font-mono font-black text-2xl tracking-wider text-brand-dark truncate" title={op.licensePlate}>
-                                    {op.licensePlate}
-                                </p>
-                                <p className="text-xs text-text-secondary truncate">{op.transportId} | ETA: {new Date(op.eta).toLocaleString()}</p>
-                            </>
-                        ) : (
-                            <>
-                                <p className="font-bold text-base text-brand-dark truncate">{op.transportId}</p>
-                                <p className="text-xs text-text-tertiary truncate">ETA: {new Date(op.eta).toLocaleString()}</p>
-                            </>
+                        <p className="font-bold text-lg text-brand-dark truncate" title={op.transportId}>
+                            {op.transportId}
+                        </p>
+                        {op.modality === 'truck' && op.licensePlate && 
+                            <p className="font-mono text-sm text-text-secondary truncate">{op.licensePlate}</p>
+                        }
+                    </div>
+                    <div className="min-w-0">
+                        <p className="font-semibold text-sm truncate">{firstTransfer?.customer}</p>
+                        <p className="text-xs text-text-tertiary truncate">{firstTransfer?.product}</p>
+                    </div>
+                    <div className="min-w-0">
+                        <p className="font-semibold text-sm">Scheduled: {new Date(op.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                        <span className={`px-2 py-0.5 text-xs font-semibold rounded-full ${arrivalStatus.colorClass} ${arrivalStatus.textColor}`}>
+                            {arrivalStatus.label}
+                        </span>
+                    </div>
+                    <div className="text-right">
+                        {op.modality === 'truck' && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onMarkArrived(op.id); }}
+                                className="btn-primary !py-2 !px-4 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={!canMarkArrived}
+                                title={canMarkArrived ? "Mark truck as arrived" : "Permission Denied"}
+                            >
+                                Mark Arrived
+                            </button>
                         )}
                     </div>
                 </div>
-                <div className="hidden sm:block w-1/4 px-4 min-w-0">
-                     <p className="font-semibold text-sm truncate">{firstTransfer?.customer}</p>
-                     <p className="text-xs text-text-tertiary truncate">{firstTransfer?.product}</p>
-                </div>
-                 {isRegisteredTruck ? (
-                     <div className="w-48 px-4 hidden md:flex items-center justify-end">
-                        <button
-                            onClick={(e) => { e.stopPropagation(); acceptTruckArrival(op.id); }}
-                            className="btn-primary !py-2 !px-4 text-sm"
-                            disabled={!canApprove}
-                            title={!canApprove ? "Permission Denied" : "Accept Truck Arrival"}
-                        >
-                            Accept Arrival
-                        </button>
-                    </div>
-                ) : (
-                    <div className="w-48 px-4 hidden md:flex items-center gap-2">
-                        <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                            <div className="h-full bg-brand-primary rounded-full" style={{ width: `${progress}%` }}></div>
-                        </div>
-                        <span className="text-xs font-semibold text-text-secondary w-10 text-right">{progress.toFixed(0)}%</span>
-                    </div>
-                )}
-                {allChecks.length > 0 && !isRegisteredTruck && (
-                    <div
-                        className="flex-shrink-0 px-2 cursor-pointer"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setIsExpanded(!isExpanded);
-                        }}
-                    >
-                        <i className={`fas fa-chevron-down text-text-tertiary transition-transform ${isExpanded ? 'rotate-180' : ''}`}></i>
-                    </div>
-                )}
             </div>
-
-            {isExpanded && allChecks.length > 0 && !isRegisteredTruck && (
-                <div className="p-4 border-t bg-slate-50">
-                    <div className="space-y-2">
-                        {allChecks.map(check => (
-                            <div key={check.name} className="p-2 bg-white rounded-md grid grid-cols-[1fr,120px,150px] items-center gap-4">
-                                <p className="font-semibold text-sm">{check.name}</p>
-                                <StatusBadge status={check.status} />
-                                <div className="text-right">
-                                    {check.type === 'system' && (
-                                        !validation.isValid && <span title={validation.issues.join('\n')} className="text-red-500 font-bold text-sm">ISSUES</span>
-                                    )}
-                                    {check.type === 'general' && (
-                                        <input
-                                            type="checkbox"
-                                            className="h-5 w-5 rounded border-gray-300 text-brand-primary focus:ring-brand-primary"
-                                            checked={check.status === 'complete'}
-                                            onChange={(e) => updatePreArrivalCheck(op.id, check.name, e.target.checked ? 'complete' : 'pending')}
-                                        />
-                                    )}
-                                    {check.type === 'service' && (
-                                        <select
-                                            value={check.status}
-                                            onChange={e => updateVesselServiceStatus(op.id, check.name, e.target.value as any)}
-                                            className="!py-1 !px-2 text-xs"
-                                        >
-                                            <option value="pending">Pending</option>
-                                            <option value="confirmed">Confirmed</option>
-                                            <option value="complete">Complete</option>
-                                        </select>
-                                    )}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
         </div>
     );
 };
 
-interface PlanningListProps {
-    operations: Operation[];
-}
-
-const PlanningList: React.FC<PlanningListProps> = ({ operations }) => {
-    const { workspaceFilter, workspaceSearchTerm } = useContext(AppContext)!;
-
-    const plannedOps = useMemo(() => {
-        return operations
-            .filter(op => {
-                const isPlannedAndWaiting = op.status === 'planned' && !['Reschedule Required', 'No Show'].includes(op.currentStatus);
-                const isRegisteredTruck = op.modality === 'truck' && op.truckStatus === 'Registered';
-
-                if (!isPlannedAndWaiting && !isRegisteredTruck) return false;
-                
-                if (workspaceFilter !== 'all' && op.modality !== workspaceFilter) return false;
-
-                if (!workspaceSearchTerm) return true;
-                const term = workspaceSearchTerm.toLowerCase();
-                return (
-                    op.transportId?.toLowerCase().includes(term) ||
-                    op.orderNumber?.toLowerCase().includes(term) ||
-                    op.licensePlate?.toLowerCase().includes(term) ||
-                    (op.transferPlan || []).some(tp =>
-                        (tp.transfers || []).some(t =>
-                            t.product?.toLowerCase().includes(term) ||
-                            t.customer?.toLowerCase().includes(term)
-                        )
-                    )
-                );
-            })
-            .sort((a, b) => {
-                const aIsRegistered = a.modality === 'truck' && a.truckStatus === 'Registered';
-                const bIsRegistered = b.modality === 'truck' && b.truckStatus === 'Registered';
-                if (aIsRegistered && !bIsRegistered) return -1;
-                if (!aIsRegistered && bIsRegistered) return 1;
-                return new Date(a.eta).getTime() - new Date(b.eta).getTime();
-            });
-
-    }, [operations, workspaceFilter, workspaceSearchTerm]);
+const ArrivedOpRow: React.FC<{ op: Operation, arrivalTime: string | undefined }> = ({ op, arrivalTime }) => {
+    const { currentUser, switchView } = useContext(AppContext)!;
+    
+    const canApprove = canApproveGate(currentUser);
+    const firstTransfer = op.transferPlan?.flatMap(tp => tp.transfers)[0];
 
     return (
-        <div className="space-y-3">
-             <h3 className="font-bold text-lg text-text-secondary px-4 mb-2">Upcoming Arrivals & Gate Queue ({plannedOps.length})</h3>
-            {plannedOps.length > 0 ? (
-                plannedOps.map(op => <ChecklistRow key={op.id} op={op} />)
-            ) : (
-                <div className="card text-center py-8 text-text-secondary">
-                    <p>No planned operations awaiting arrival match the current filter.</p>
+        <div className="card !p-0 flex items-center border-l-4 border-blue-500">
+            <div 
+                className="flex-grow p-3 cursor-pointer hover:bg-slate-50"
+                onClick={() => switchView('operation-details', op.id)}
+            >
+                <div className="grid grid-cols-[auto,1fr,1fr,1.5fr,1fr] items-center gap-4">
+                    <i className={`fas ${getIcon(op.modality)} text-2xl text-text-secondary w-8 text-center`} title={op.modality}></i>
+                    <div className="min-w-0">
+                        <p className="font-bold text-lg text-brand-dark truncate" title={op.transportId}>
+                            {op.transportId}
+                        </p>
+                        {op.modality === 'truck' && op.licensePlate && 
+                            <p className="font-mono text-sm text-text-secondary truncate">{op.licensePlate}</p>
+                        }
+                    </div>
+                    <div className="min-w-0">
+                        <p className="font-semibold text-sm truncate">{firstTransfer?.customer}</p>
+                        <p className="text-xs text-text-tertiary truncate">{firstTransfer?.product}</p>
+                    </div>
+                    <div className="min-w-0">
+                        <p className="font-semibold text-sm">Arrived: {arrivalTime ? new Date(arrivalTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'}</p>
+                        <p className="text-xs text-text-tertiary">Scheduled: {new Date(op.eta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                    </div>
+                    <div className="text-right">
+                        {op.modality === 'truck' && (
+                            <button
+                                onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    switchView('operation-details', op.id); 
+                                }}
+                                className="btn-secondary !py-2 !px-4 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={!canApprove}
+                                title={canApprove ? "Verify arrival checklist" : "Permission Denied"}
+                            >
+                                Verify Checklist
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+const UpcomingSection: React.FC<{ title: string; ops: Operation[]; onMarkArrived: (opId: string) => void; }> = ({ title, ops, onMarkArrived }) => {
+    if (ops.length === 0) {
+        return null;
+    }
+    return (
+        <div>
+            <h3 className="font-bold text-lg text-text-secondary px-1 mb-2">{title} ({ops.length})</h3>
+            <div className="space-y-3">
+                {ops.map(op => <UpcomingOpRow key={op.id} op={op} onMarkArrived={onMarkArrived} />)}
+            </div>
+        </div>
+    );
+};
+
+const ArrivedOpsSection: React.FC<{ title: string; ops: {op: Operation, arrivalTime: string | undefined}[]; }> = ({ title, ops }) => {
+    if (ops.length === 0) {
+        return null;
+    }
+    return (
+        <div>
+            <h3 className="font-bold text-lg text-text-secondary px-1 mb-2">{title} ({ops.length})</h3>
+            <div className="space-y-3">
+                {ops.map(({op, arrivalTime}) => <ArrivedOpRow key={op.id} op={op} arrivalTime={arrivalTime} />)}
+            </div>
+        </div>
+    );
+};
+
+const getArrivalTime = (op: Operation): string | undefined => {
+    let arrivalEventName: string;
+    let sof: SOFItem[] | undefined;
+
+    switch (op.modality) {
+        case 'truck':
+            arrivalEventName = 'Arrived';
+            sof = op.transferPlan?.[0]?.transfers?.[0]?.sof;
+            break;
+        case 'vessel':
+            arrivalEventName = 'VESSEL ALONGSIDE';
+            sof = op.sof;
+            break;
+        case 'rail':
+            arrivalEventName = 'Arrived at Terminal';
+            sof = op.transferPlan?.[0]?.transfers?.[0]?.sof;
+            break;
+        default:
+            return undefined;
+    }
+    
+    if (!sof) return undefined;
+
+    const arrivalSof = sof.find(s => s.event.includes(arrivalEventName) && s.status === 'complete');
+    return arrivalSof?.time;
+};
+
+const ArrivalsModule: React.FC<{ operations: Operation[] }> = ({ operations }) => {
+    const { simulatedTime, markTruckArrived, workspaceSearchTerm } = useContext(AppContext)!;
+
+    const { arrived, overdue, arrivingNow, upcoming } = useMemo(() => {
+        const arrivedOps: Operation[] = [];
+        const upcomingOps: Operation[] = [];
+
+        const ARRIVED_STATUSES = {
+            truck: ['Registered'],
+            vessel: ['Alongside', 'Preparations', 'Surveying'],
+            rail: ['Arrived', 'On Siding']
+        };
+
+        operations.forEach(op => {
+            // Basic filtering
+            if (!['planned', 'active'].includes(op.status)) return;
+            if (['Reschedule Required', 'No Show'].includes(op.currentStatus)) return;
+            
+            // Search term filtering
+            if (workspaceSearchTerm) {
+                const term = workspaceSearchTerm.toLowerCase();
+                const firstTransfer = op.transferPlan?.[0]?.transfers?.[0];
+                const matches = (
+                    op.transportId?.toLowerCase().includes(term) ||
+                    op.licensePlate?.toLowerCase().includes(term) ||
+                    firstTransfer?.product?.toLowerCase().includes(term) ||
+                    firstTransfer?.customer?.toLowerCase().includes(term)
+                );
+                if (!matches) return;
+            }
+
+            // Grouping
+            const arrivedStatusesForModality = ARRIVED_STATUSES[op.modality] || [];
+            if (op.status === 'active' && (arrivedStatusesForModality.includes(op.currentStatus) || (op.modality === 'truck' && arrivedStatusesForModality.includes(op.truckStatus || '')))) {
+                arrivedOps.push(op);
+            } else if (op.status === 'planned') {
+                upcomingOps.push(op);
+            }
+        });
+
+        const now = simulatedTime.getTime();
+        const fifteenMinutes = 15 * 60 * 1000;
+        const oneHour = 60 * 60 * 1000;
+        
+        const overdueTrucks: Operation[] = [];
+        const arrivingNowTrucks: Operation[] = [];
+        const upcomingTrucks: Operation[] = [];
+
+        upcomingOps.forEach(op => {
+            const etaTime = new Date(op.eta).getTime();
+            if (etaTime < now - fifteenMinutes) {
+                overdueTrucks.push(op);
+            } else if (etaTime < now + oneHour) {
+                arrivingNowTrucks.push(op);
+            } else {
+                upcomingTrucks.push(op);
+            }
+        });
+        
+        const sortByEta = (a: Operation, b: Operation) => new Date(a.eta).getTime() - new Date(b.eta).getTime();
+        overdueTrucks.sort(sortByEta);
+        arrivingNowTrucks.sort(sortByEta);
+        upcomingTrucks.sort(sortByEta);
+
+        const arrivedWithTime = arrivedOps.map(op => ({ op, arrivalTime: getArrivalTime(op) }));
+        arrivedWithTime.sort((a, b) => {
+            if (a.arrivalTime && b.arrivalTime) return new Date(b.arrivalTime).getTime() - new Date(a.arrivalTime).getTime();
+            return 0;
+        });
+
+        return { arrived: arrivedWithTime, overdue: overdueTrucks, arrivingNow: arrivingNowTrucks, upcoming: upcomingTrucks };
+    }, [operations, simulatedTime, workspaceSearchTerm]);
+
+    return (
+        <div className="p-4 sm:p-6 space-y-8">
+            <ArrivedOpsSection title="Arrived - Awaiting Further Action" ops={arrived} />
+            <UpcomingSection title="Overdue Arrivals" ops={overdue} onMarkArrived={markTruckArrived} />
+            <UpcomingSection title="Arriving Now" ops={arrivingNow} onMarkArrived={markTruckArrived} />
+            <UpcomingSection title="Upcoming Today" ops={upcoming} onMarkArrived={markTruckArrived} />
+
+            {arrived.length === 0 && overdue.length === 0 && arrivingNow.length === 0 && upcoming.length === 0 && (
+                 <div className="card text-center py-12 text-text-secondary">
+                    <p>No planned or recently arrived operations match the current filter.</p>
                 </div>
             )}
         </div>
     );
 };
 
-export default PlanningList;
+export default ArrivalsModule;

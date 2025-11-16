@@ -23,7 +23,8 @@ const ModalityFilter: React.FC<ModalityFilterProps> = ({ filter, setFilter, show
         <div className="planning-board-filters">
             {options.map(f => {
                 const label = f.charAt(0).toUpperCase() + f.slice(1);
-                const isActive = filter === f || (filter === 'all' && showAllOption === false && f === 'vessel'); // Default to vessel if 'all' is not an option
+                // If 'all' isn't an option, and the global filter is 'all', default the UI to 'vessel' being active.
+                const isActive = filter === f || (filter === 'all' && showAllOption === false && f === 'vessel');
 
                 return (
                     <button
@@ -33,7 +34,7 @@ const ModalityFilter: React.FC<ModalityFilterProps> = ({ filter, setFilter, show
                         title={label}
                     >
                         {f === 'all' ? (
-                            label
+                            'All'
                         ) : (
                             <i className={`fas ${getIcon(f as Modality)}`}></i>
                         )}

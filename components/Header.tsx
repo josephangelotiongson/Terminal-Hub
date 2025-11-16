@@ -1,4 +1,6 @@
 
+
+
 import React, { useContext, useState, useRef, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import WorkspaceSearch from './WorkspaceSearch';
@@ -15,7 +17,7 @@ const Header: React.FC = () => {
         activeLineIndex, activeTransferIndex,
         viewHistory, goBack,
         workspaceFilter, setWorkspaceFilter,
-        visibleInfrastructure, setVisibleInfrastructure,
+        visibleInfrastructure, updateColumnVisibility,
         currentTerminalSettings,
         openNewOpModal,
         isTimePlaying, setIsTimePlaying, simulatedTime,
@@ -55,15 +57,14 @@ const Header: React.FC = () => {
     }, [workspaceFilter, currentTerminalSettings]);
 
     const handleInfraVisibilityChange = (infraId: string, isChecked: boolean) => {
-        setVisibleInfrastructure(prev => {
-            const newSet = new Set(prev);
-            if (isChecked) {
-                newSet.add(infraId);
-            } else {
-                newSet.delete(infraId);
-            }
-            return Array.from(newSet).sort((a, b) => filteredInfrastructure.indexOf(a) - filteredInfrastructure.indexOf(b));
-        });
+        const newSet = new Set(visibleInfrastructure);
+        if (isChecked) {
+            newSet.add(infraId);
+        } else {
+            newSet.delete(infraId);
+        }
+        const newVisibleCols = Array.from(newSet).sort((a, b) => filteredInfrastructure.indexOf(a) - filteredInfrastructure.indexOf(b));
+        updateColumnVisibility(newVisibleCols);
     };
 
     const terminalNames: { [key: string]: string } = {
@@ -145,8 +146,8 @@ const Header: React.FC = () => {
                             {isInfraFilterOpen && showColumnFilter && (
                                 <div className="absolute top-full right-0 mt-2 w-72 bg-white border rounded-lg shadow-xl z-30 p-4">
                                     <div className="flex justify-between items-center mb-2">
-                                        <button onClick={() => setVisibleInfrastructure(filteredInfrastructure)} className="text-xs text-blue-600 hover:underline font-semibold">Select All</button>
-                                        <button onClick={() => setVisibleInfrastructure([])} className="text-xs text-blue-600 hover:underline font-semibold">Select None</button>
+                                        <button onClick={() => updateColumnVisibility(filteredInfrastructure)} className="text-xs text-blue-600 hover:underline font-semibold">Select All</button>
+                                        <button onClick={() => updateColumnVisibility([])} className="text-xs text-blue-600 hover:underline font-semibold">Select None</button>
                                     </div>
                                     <div className="max-h-60 overflow-y-auto space-y-2 border-t pt-2">
                                         {filteredInfrastructure.map(infraId => {

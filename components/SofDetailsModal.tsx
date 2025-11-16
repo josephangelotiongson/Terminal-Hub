@@ -376,7 +376,14 @@ const SofDetailsModal: React.FC<SofDetailsModalProps> = ({ isOpen, onClose, onSa
                              ) : (
                                  <div className="flex gap-2">
                                      <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
-                                     <button onClick={() => setIsTakingPhoto(true)} className="btn-primary flex-1"><i className="fas fa-camera mr-2"></i>Take Photo</button>
+                                     <button
+                                        onClick={() => setIsTakingPhoto(true)}
+                                        className="btn-primary flex-1 opacity-50 cursor-not-allowed"
+                                        disabled
+                                        title="Camera functionality is disabled for this demo."
+                                    >
+                                        <i className="fas fa-camera mr-2"></i>Take Photo
+                                    </button>
                                      <button onClick={() => fileInputRef.current?.click()} className="btn-secondary flex-1"><i className="fas fa-upload mr-2"></i>Upload</button>
                                  </div>
                              )}

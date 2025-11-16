@@ -1,11 +1,10 @@
 
-
 import React, { useState, useEffect, useContext, useMemo } from 'react';
 import Modal from './Modal';
 import { Operation, Hold } from '../types';
 import { AppContext } from '../context/AppContext';
 import DateTimePicker from './DateTimePicker'; // Import the new component
-import { formatInfraName, canEditPlan, getOperationDurationHours, validateOperationPlan } from '../utils/helpers';
+import { formatInfraName, canReschedule, getOperationDurationHours, validateOperationPlan } from '../utils/helpers';
 import { MOCK_CURRENT_TIME } from '../constants';
 
 interface RescheduleDetailsModalProps {
@@ -13,11 +12,6 @@ interface RescheduleDetailsModalProps {
     onClose: () => void;
     operation: Operation;
     viewDate: Date;
-}
-
-interface SuggestedSlot {
-    time: Date;
-    resource: string;
 }
 
 const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen, onClose, operation, viewDate }) => {
@@ -29,8 +23,7 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
     const [customDetails, setCustomDetails] = useState<any>({});
     const [newTime, setNewTime] = useState('');
     const [newResource, setNewResource] = useState('');
-    const [suggestions, setSuggestions] = useState<SuggestedSlot[]>([]);
-    const canSave = canEditPlan(currentUser);
+    const canSave = canReschedule(currentUser);
 
     const validTruckInfra = useMemo(() => Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
         .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === 'truck'), [currentTerminalSettings]);
@@ -101,60 +94,6 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
         }
     }, [isOpen, details]);
 
-    useEffect(() => {
-        if (isOpen) {
-            const opDurationHours = getOperationDurationHours(operation);
-            const opDurationMs = opDurationHours * 3600 * 1000;
-
-            const scheduledItems = [...operations, ...holds].flatMap(item => {
-                if ('resource' in item) { // It's a Hold
-                    if (item.status === 'approved' || item.status === 'pending') {
-                        return [{ resource: item.resource, start: new Date(item.startTime).getTime(), end: new Date(item.endTime).getTime() }];
-                    }
-                } else { // It's an Operation
-                    if (item.id !== operation.id && ((item.status === 'planned' && item.currentStatus !== 'Reschedule Required') || item.status === 'active')) {
-                        const start = new Date(item.eta).getTime();
-                        const duration = getOperationDurationHours(item) * 3600 * 1000;
-                        return item.transferPlan.map(tp => ({ resource: tp.infrastructureId, start, end: start + duration }));
-                    }
-                }
-                return [];
-            }).filter(Boolean);
-
-            const transfer = operation.transferPlan[0]?.transfers[0];
-            let compatibleInfra = validTruckInfra;
-            if (transfer) {
-                const requiredTank = transfer.direction === 'Tank to Truck' ? transfer.from : transfer.to;
-                if (requiredTank && currentTerminalSettings.masterTanks?.[requiredTank]) {
-                    compatibleInfra = validTruckInfra.filter(bay => 
-                        (currentTerminalSettings.infrastructureTankMapping?.[bay] || []).includes(requiredTank)
-                    );
-                }
-            }
-            
-            const foundSlots: SuggestedSlot[] = [];
-            let searchStartMs = Math.max(simulatedTime.getTime(), new Date(viewDate).setHours(0,0,0,0));
-            const remainder = searchStartMs % (15 * 60 * 1000);
-            if (remainder !== 0) searchStartMs += (15 * 60 * 1000) - remainder;
-
-            const searchEndMs = searchStartMs + 3 * 24 * 60 * 60 * 1000;
-
-            for (let time = searchStartMs; time < searchEndMs && foundSlots.length < 3; time += 15 * 60 * 1000) {
-                const slotEnd = time + opDurationMs;
-                for (const infra of compatibleInfra) {
-                    const conflict = scheduledItems.some(item => 
-                        item.resource === infra && Math.max(item.start, time) < Math.min(item.end, slotEnd)
-                    );
-                    if (!conflict) {
-                        foundSlots.push({ time: new Date(time), resource: infra });
-                        if (foundSlots.length >= 3) break;
-                    }
-                }
-            }
-            setSuggestions(foundSlots);
-        }
-    }, [isOpen, operation, operations, holds, viewDate, currentTerminalSettings, simulatedTime, validTruckInfra, settings]);
-
     const handleSave = () => {
         if (!newTime || !newResource) {
             alert('Please select a new time and resource to reschedule.');
@@ -194,11 +133,6 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
 
     const handleDetailsChange = (field: string, value: string) => {
         setCustomDetails((prev: any) => ({ ...prev, [field]: value }));
-    };
-    
-    const handleSuggestionClick = (slot: SuggestedSlot) => {
-        setNewTime(slot.time.toISOString());
-        setNewResource(slot.resource);
     };
 
     const handleSelectOnBoard = () => {
@@ -258,8 +192,6 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
     };
 
     if (!isOpen) return null;
-    
-    const isSameDay = (d1: Date, d2: Date) => d1.getDate() === d2.getDate() && d1.getMonth() === d2.getMonth() && d1.getFullYear() === d2.getFullYear();
 
     return (
         <Modal
@@ -298,44 +230,24 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
                     )}
                 </div>
 
-                <div className="p-4 bg-slate-50 rounded-lg">
-                    <h5 className="font-semibold mb-2">Suggested Next Available Slots</h5>
-                    <div className="flex flex-col gap-2">
-                        <div className="flex flex-wrap gap-2">
-                            {suggestions.length > 0 ? suggestions.map((slot, idx) => {
-                                const isToday = isSameDay(slot.time, simulatedTime);
-                                return (
-                                    <button key={`${slot.resource}-${slot.time.toISOString()}-${idx}`} className="btn-suggestion text-left" onClick={() => handleSuggestionClick(slot)}>
-                                        <div className="font-bold text-brand-dark">{formatInfraName(slot.resource)}</div>
-                                        <div className="text-xs">
-                                            {!isToday && <span className="mr-1">{slot.time.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>}
-                                            {slot.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        </div>
-                                    </button>
-                                );
-                            }) : <p className="text-sm text-text-secondary italic">No compatible slots found within the next 3 days.</p>}
-                        </div>
-                        <button className="btn-secondary w-full mt-2" onClick={handleSelectOnBoard}>
-                            <i className="fas fa-th mr-2"></i>Select Slot on Board
-                        </button>
-                    </div>
-                </div>
-
                 <div>
-                    <h5 className="font-semibold mb-2">Or Reschedule Manually</h5>
+                    <h5 className="font-semibold mb-2">Reschedule Options</h5>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label>New Scheduled Time</label>
-                            <DateTimePicker value={newTime} onChange={setNewTime} />
+                            <DateTimePicker value={newTime} onChange={setNewTime} disabled={!canSave} />
                         </div>
                         <div>
                             <label>New Resource</label>
-                            <select value={newResource} onChange={e => setNewResource(e.target.value)}>
+                            <select value={newResource} onChange={e => setNewResource(e.target.value)} disabled={!canSave}>
                                 <option value="">Select Bay...</option>
                                 {validTruckInfra.map(infra => <option key={infra} value={infra}>{formatInfraName(infra)}</option>)}
                             </select>
                         </div>
                     </div>
+                    <button className="btn-secondary w-full mt-4" onClick={handleSelectOnBoard} disabled={!canSave}>
+                        <i className="fas fa-th mr-2"></i>Or, Select Slot Visually on Board
+                    </button>
                 </div>
 
             </div>

@@ -1,11 +1,12 @@
 
+
 import React, { useContext, useState, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, Transfer, TransferPlanItem, Modality, SpecialServiceData, Hold, ActivityLogItem, SOFItem } from '../types';
 import TankLevelIndicator from './TankLevelIndicator';
 import DateTimePicker from './DateTimePicker'; // Import the new component
 import CancelModal from './CancelModal';
-import { formatInfraName, validateOperationPlan, getOperationDurationHours, canReschedule } from '../utils/helpers';
+import { formatInfraName, validateOperationPlan, getOperationDurationHours, canReschedule, canEditPlan } from '../utils/helpers';
 import RequeuePriorityModal from './RequeuePriorityModal';
 import DocumentManager from './DocumentManager';
 import { LINE_CLEANING_EVENTS } from '../constants';
@@ -34,7 +35,9 @@ const OperationPlan: React.FC = () => {
     const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<'transfers' | 'requirements' | 'services' | 'documents'>('transfers');
     const [priorityModalOpen, setPriorityModalOpen] = useState(false);
-    const canUserReschedule = canReschedule(currentUser, plan);
+    // FIX: The `canReschedule` function expects only one argument (`user`), but was called with two. The second argument `plan` has been removed.
+    const canUserReschedule = canReschedule(currentUser);
+    const isReadOnly = !canEditPlan(currentUser);
 
     const checkCompatibility = React.useCallback(
         (infraId: string, currentProduct: string, lineTransfers: Transfer[], transferIndex: number): { compatible: boolean; message: string; } => {
@@ -175,8 +178,13 @@ const OperationPlan: React.FC = () => {
         setPlan(prevPlan => {
             if (!prevPlan) return null;
             const newTransferPlan = JSON.parse(JSON.stringify(prevPlan.transferPlan)) as TransferPlanItem[];
-            const transfer = newTransferPlan[lineIndex].transfers[transferIndex];
+            const transfer = newTransferPlan[lineIndex]?.transfers?.[transferIndex];
             
+            if (!transfer) {
+                console.warn(`Attempted to edit non-existent transfer at [${lineIndex}, ${transferIndex}]`);
+                return prevPlan;
+            }
+
             const oldValue = (transfer as any)[field];
             if (oldValue === value) return prevPlan;
             (transfer as any)[field] = field === 'tonnes' ? parseFloat(value) || 0 : value;
@@ -237,8 +245,8 @@ const OperationPlan: React.FC = () => {
     };
 
     const availableVesselTransferServices = useMemo(() => {
-        const modServices = settings.modalityServices?.vessel || [];
-        const prodServices = settings.productServices || [];
+        const modServices = (settings.modalityServices && Array.isArray(settings.modalityServices.vessel)) ? settings.modalityServices.vessel : [];
+        const prodServices = Array.isArray(settings.productServices) ? settings.productServices : [];
         return [...new Set([...modServices, ...prodServices])].sort();
     }, [settings]);
 
@@ -285,9 +293,9 @@ const OperationPlan: React.FC = () => {
     };
 
     const availableModalityServices = useMemo(() => {
-        if (!plan || plan.modality === 'vessel') return []; // Handled separately
-        const modServices = settings.modalityServices?.[plan.modality] || [];
-        const prodServices = settings.productServices || [];
+        if (!plan || plan.modality === 'vessel') return [];
+        const modServices = (settings.modalityServices && Array.isArray(settings.modalityServices[plan.modality])) ? settings.modalityServices[plan.modality] : [];
+        const prodServices = Array.isArray(settings.productServices) ? settings.productServices : [];
         return [...new Set([...modServices, ...prodServices])].sort();
     }, [settings, plan]);
 
@@ -338,7 +346,10 @@ const OperationPlan: React.FC = () => {
     const allInfrastructureForModality = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
         .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === plan.modality);
     
-    const availableVesselServices = settings.vesselServices || [];
+    const availableVesselServices = useMemo(() => {
+        return Array.isArray(settings.vesselServices) ? settings.vesselServices : [];
+    }, [settings.vesselServices]);
+
     const selectedModalityServices = (plan.transferPlan[0]?.transfers[0]?.specialServices || []).map(s => s.name);
     
     return (
@@ -360,17 +371,18 @@ const OperationPlan: React.FC = () => {
             <div className="p-4 sm:p-6 space-y-6">
                 <div className="flex justify-between items-center">
                     <h2 className="text-3xl font-bold text-brand-dark flex items-center gap-3">
-                        <span>Plan: {plan.transportId}</span>
+                        <span>{isReadOnly ? 'View Plan' : 'Plan'}: {plan.transportId}</span>
                         <i className={`fas ${getIcon(plan.modality)} text-3xl text-text-secondary`} title={plan.modality}></i>
                     </h2>
                     <div className="flex space-x-2">
-                        <button onClick={() => setIsCancelModalOpen(true)} className="btn-danger"><i className="fas fa-ban mr-2"></i>Cancel Operation</button>
-                        <button onClick={handleSave} className="btn-secondary"><i className="fas fa-save mr-2"></i>Save & Close</button>
+                        <button onClick={() => setIsCancelModalOpen(true)} className="btn-danger" disabled={isReadOnly}><i className="fas fa-ban mr-2"></i>Cancel Operation</button>
+                        <button onClick={handleSave} className="btn-secondary" disabled={isReadOnly}><i className="fas fa-save mr-2"></i>Save & Close</button>
                          {!validation.isValid && plan.status === 'planned' && canUserReschedule && (
                              <button 
                                 onClick={() => setPriorityModalOpen(true)}
                                 className="btn-primary !bg-orange-500 hover:!bg-orange-600"
                                 title="This plan has issues and should be rescheduled."
+                                disabled={isReadOnly}
                             >
                                 <i className="fas fa-calendar-alt mr-2"></i>Reschedule
                             </button>
@@ -391,12 +403,12 @@ const OperationPlan: React.FC = () => {
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                         <div>
                             <label>Transport ID</label>
-                            <input type="text" value={plan.transportId} onChange={(e) => handlePlanChange('transportId', e.target.value)} />
+                            <input type="text" value={plan.transportId} onChange={(e) => handlePlanChange('transportId', e.target.value)} disabled={isReadOnly} />
                         </div>
                         {plan.modality === 'truck' && (
                              <div>
                                 <label>License Plate</label>
-                                <input type="text" value={plan.licensePlate || ''} onChange={(e) => handlePlanChange('licensePlate', e.target.value)} />
+                                <input type="text" value={plan.licensePlate || ''} onChange={(e) => handlePlanChange('licensePlate', e.target.value)} disabled={isReadOnly} />
                             </div>
                         )}
                         <div>
@@ -404,26 +416,27 @@ const OperationPlan: React.FC = () => {
                             <DateTimePicker 
                                 value={plan.eta} 
                                 onChange={(isoString) => handlePlanChange('eta', isoString)} 
+                                disabled={isReadOnly}
                             />
                         </div>
                          <div>
                             <label>Estimated Duration (hours)</label>
-                            <input type="number" value={plan.durationHours || getOperationDurationHours(plan)} onChange={(e) => handlePlanChange('durationHours', parseFloat(e.target.value) || 1)} min="0.5" step="0.5"/>
+                            <input type="number" value={plan.durationHours || getOperationDurationHours(plan)} onChange={(e) => handlePlanChange('durationHours', parseFloat(e.target.value) || 1)} min="0.5" step="0.5" disabled={isReadOnly}/>
                         </div>
                     </div>
                      {plan.modality === 'truck' && (
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6 border-t pt-6">
                             <div>
                                 <label>Driver Name</label>
-                                <input type="text" value={plan.driverName || ''} onChange={(e) => handlePlanChange('driverName', e.target.value)} placeholder="e.g. John Doe"/>
+                                <input type="text" value={plan.driverName || ''} onChange={(e) => handlePlanChange('driverName', e.target.value)} placeholder="e.g. John Doe" disabled={isReadOnly}/>
                             </div>
                             <div>
                                 <label>Driver Phone</label>
-                                <input type="text" value={plan.driverPhone || ''} onChange={(e) => handlePlanChange('driverPhone', e.target.value)} placeholder="e.g. 555-123-4567"/>
+                                <input type="text" value={plan.driverPhone || ''} onChange={(e) => handlePlanChange('driverPhone', e.target.value)} placeholder="e.g. 555-123-4567" disabled={isReadOnly}/>
                             </div>
                             <div>
                                 <label>Driver Email</label>
-                                <input type="email" value={plan.driverEmail || ''} onChange={(e) => handlePlanChange('driverEmail', e.target.value)} placeholder="e.g. john.d@example.com"/>
+                                <input type="email" value={plan.driverEmail || ''} onChange={(e) => handlePlanChange('driverEmail', e.target.value)} placeholder="e.g. john.d@example.com" disabled={isReadOnly}/>
                             </div>
                         </div>
                     )}
@@ -458,11 +471,11 @@ const OperationPlan: React.FC = () => {
                                     <div key={lineIndex} className="card p-6 bg-slate-50 border">
                                         <div className="flex justify-between items-center mb-4">
                                             <h3 className="text-xl font-semibold text-text-primary">Infrastructure: {line.infrastructureId ? formatInfraName(line.infrastructureId) : `Lineup #${lineIndex + 1}`}</h3>
-                                            {plan.modality !== 'truck' && <button onClick={() => handleRemoveInfrastructure(lineIndex)} className="btn-icon danger" title="Remove Infrastructure"><i className="fas fa-trash"></i></button>}
+                                            {plan.modality !== 'truck' && <button onClick={() => handleRemoveInfrastructure(lineIndex)} className="btn-icon danger" title="Remove Infrastructure" disabled={isReadOnly}><i className="fas fa-trash"></i></button>}
                                         </div>
                                         <div>
                                             <label>Infrastructure ID</label>
-                                            <select value={line.infrastructureId} onChange={(e) => handleInfraChange(lineIndex, e.target.value)}>
+                                            <select value={line.infrastructureId} onChange={(e) => handleInfraChange(lineIndex, e.target.value)} disabled={isReadOnly}>
                                                 <option value="">Select Infrastructure...</option>
                                                 {allInfrastructureForModality.map(infra => (
                                                     <option key={infra} value={infra}>{formatInfraName(infra)}</option>
@@ -471,8 +484,6 @@ const OperationPlan: React.FC = () => {
                                         </div>
                                         
                                         {line.transfers.map((transfer, transferIndex) => {
-                                            const compatibility = checkCompatibility(line.infrastructureId, transfer.product, line.transfers, transferIndex);
-
                                             const incompatibilityInfo = useMemo(() => {
                                                 if (!transfer.product) return null;
                                         
@@ -562,7 +573,7 @@ const OperationPlan: React.FC = () => {
                                                                 </p>
                                                             </div>
                                                             {!transfer.preTransferCleaningSof ? (
-                                                                <button onClick={() => handleAddCleaning(lineIndex, transferIndex)} className="btn-primary !bg-red-600 hover:!bg-red-700 flex-shrink-0">Add Required Cleaning</button>
+                                                                <button onClick={() => handleAddCleaning(lineIndex, transferIndex)} className="btn-primary !bg-red-600 hover:!bg-red-700 flex-shrink-0" disabled={isReadOnly}>Add Required Cleaning</button>
                                                             ) : (
                                                                 <div className="flex items-center gap-2 text-green-700 font-semibold text-sm">
                                                                     <i className="fas fa-check-circle"></i> Cleaning Added
@@ -573,7 +584,7 @@ const OperationPlan: React.FC = () => {
 
                                                     <h4 className="font-semibold mb-4 text-text-secondary">Transfer #{transferIndex + 1}</h4>
                                                     <div className="absolute top-4 right-0">
-                                                        {plan.modality !== 'truck' && <button onClick={() => handleRemoveTransfer(lineIndex, transferIndex)} className="btn-icon danger" title="Remove Transfer"><i className="fas fa-times"></i></button>}
+                                                        {plan.modality !== 'truck' && <button onClick={() => handleRemoveTransfer(lineIndex, transferIndex)} className="btn-icon danger" title="Remove Transfer" disabled={isReadOnly}><i className="fas fa-times"></i></button>}
                                                     </div>
 
                                                     {plan.modality === 'vessel' && (
@@ -589,6 +600,7 @@ const OperationPlan: React.FC = () => {
                                                                                 className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
                                                                                 checked={isChecked}
                                                                                 onChange={(e) => handleVesselTransferServiceChange(lineIndex, transferIndex, service, e.target.checked)}
+                                                                                disabled={isReadOnly}
                                                                             />
                                                                             <span className="text-xs font-medium text-gray-700">{service}</span>
                                                                         </label>
@@ -601,22 +613,21 @@ const OperationPlan: React.FC = () => {
                                                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 mt-4">
                                                         <div>
                                                             <label>Customer</label>
-                                                            <select value={transfer.customer} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'customer', e.target.value)}>
+                                                            <select value={transfer.customer} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'customer', e.target.value)} disabled={isReadOnly}>
                                                                 <option value="">Select Customer</option>
                                                                 {availableCustomers.map(c => <option key={c} value={c}>{c}</option>)}
                                                             </select>
                                                         </div>
                                                         <div>
                                                             <label>Product</label>
-                                                            <select value={transfer.product} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'product', e.target.value)} disabled={!transfer.customer}>
+                                                            <select value={transfer.product} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'product', e.target.value)} disabled={!transfer.customer || isReadOnly}>
                                                                 <option value="">Select Product</option>
                                                                 {availableProductsForCustomer.map(p => <option key={p} value={p}>{p}</option>)}
                                                             </select>
-                                                            {!compatibility.compatible && <p className="text-red-600 text-xs mt-1 font-semibold">{compatibility.message}</p>}
                                                         </div>
                                                         <div className="relative">
                                                             <label>Tonnes</label>
-                                                            <input type="number" value={transfer.tonnes} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'tonnes', e.target.value)} />
+                                                            <input type="number" value={transfer.tonnes} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'tonnes', e.target.value)} disabled={isReadOnly}/>
                                                              {transferIssues.length > 0 && (
                                                                 <div className="absolute top-1/2 right-2 mt-1" title={transferIssues.join('\n')}>
                                                                     <i className="fas fa-exclamation-triangle text-yellow-500"></i>
@@ -629,14 +640,14 @@ const OperationPlan: React.FC = () => {
                                                                 <label>From</label>
                                                                 {isFromTank ? (
                                                                     <>
-                                                                        <select value={transfer.from} onChange={e => handleTransferChange(lineIndex, transferIndex, 'from', e.target.value)} disabled={!line.infrastructureId || !transfer.product}>
+                                                                        <select value={transfer.from} onChange={e => handleTransferChange(lineIndex, transferIndex, 'from', e.target.value)} disabled={!line.infrastructureId || !transfer.product || isReadOnly}>
                                                                             <option value="">{fromPlaceholder}</option>
                                                                             {finalTankOptions.map(t => <option key={t} value={t}>{t}</option>)}
                                                                         </select>
                                                                         {tankWarningMessage && <p className="text-xs text-red-600 mt-1">{tankWarningMessage}</p>}
                                                                     </>
                                                                 ) : (
-                                                                    <input type="text" value={transfer.from} onChange={e => handleTransferChange(lineIndex, transferIndex, 'from', e.target.value)} placeholder={fromPlaceholder} />
+                                                                    <input type="text" value={transfer.from} onChange={e => handleTransferChange(lineIndex, transferIndex, 'from', e.target.value)} placeholder={fromPlaceholder} disabled={isReadOnly}/>
                                                                 )}
                                                             </div>
                                                             <i className="fas fa-long-arrow-alt-right text-text-tertiary pb-3 text-xl"></i>
@@ -644,14 +655,14 @@ const OperationPlan: React.FC = () => {
                                                                 <label>To</label>
                                                                 {isToTank ? (
                                                                     <>
-                                                                        <select value={transfer.to} onChange={e => handleTransferChange(lineIndex, transferIndex, 'to', e.target.value)} disabled={!line.infrastructureId || !transfer.product}>
+                                                                        <select value={transfer.to} onChange={e => handleTransferChange(lineIndex, transferIndex, 'to', e.target.value)} disabled={!line.infrastructureId || !transfer.product || isReadOnly}>
                                                                             <option value="">Select Tank...</option>
                                                                             {finalTankOptions.map(t => <option key={t} value={t}>{t}</option>)}
                                                                         </select>
                                                                         {tankWarningMessage && <p className="text-xs text-red-600 mt-1">{tankWarningMessage}</p>}
                                                                     </>
                                                                 ) : plan.modality === 'truck' ? (
-                                                                    <input type="text" value={transfer.to} onChange={e => handleTransferChange(lineIndex, transferIndex, 'to', e.target.value)} placeholder="Enter Truck ID/Plate" />
+                                                                    <input type="text" value={transfer.to} onChange={e => handleTransferChange(lineIndex, transferIndex, 'to', e.target.value)} placeholder="Enter Truck ID/Plate" disabled={isReadOnly}/>
                                                                 ) : (
                                                                     <input type="text" value={transfer.to} disabled placeholder={plan.transportId} className="bg-slate-100" />
                                                                 )}
@@ -660,7 +671,7 @@ const OperationPlan: React.FC = () => {
 
                                                         <div>
                                                             <label>Direction</label>
-                                                            <select value={transfer.direction} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'direction', e.target.value)}>
+                                                            <select value={transfer.direction} onChange={(e) => handleTransferChange(lineIndex, transferIndex, 'direction', e.target.value)} disabled={isReadOnly}>
                                                                 {availableDirections.map(d => <option key={d} value={d}>{d}</option>)}
                                                             </select>
                                                         </div>
@@ -678,11 +689,11 @@ const OperationPlan: React.FC = () => {
                                                 </div>
                                             );
                                         })}
-                                        {plan.modality !== 'truck' && <button onClick={() => handleAddTransfer(lineIndex)} className="btn-secondary text-sm mt-6"><i className="fas fa-plus mr-2"></i>Add Transfer</button>}
+                                        {plan.modality !== 'truck' && <button onClick={() => handleAddTransfer(lineIndex)} className="btn-secondary text-sm mt-6" disabled={isReadOnly}><i className="fas fa-plus mr-2"></i>Add Transfer</button>}
                                     </div>
                                 ))}
                                 {plan.modality !== 'truck' && <div className="mt-6">
-                                    <button onClick={handleAddInfrastructure} className="btn-secondary text-sm"><i className="fas fa-plus mr-2"></i>Add Infrastructure Lineup</button>
+                                    <button onClick={handleAddInfrastructure} className="btn-secondary text-sm" disabled={isReadOnly}><i className="fas fa-plus mr-2"></i>Add Infrastructure Lineup</button>
                                 </div>}
                             </div>
                         )}
@@ -701,6 +712,7 @@ const OperationPlan: React.FC = () => {
                                                     className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
                                                     checked={isChecked}
                                                     onChange={(e) => handleRequirementChange(req, e.target.checked)}
+                                                    disabled={isReadOnly}
                                                 />
                                                 <span className="text-sm font-medium text-gray-700">{req}</span>
                                             </label>
@@ -724,6 +736,7 @@ const OperationPlan: React.FC = () => {
                                                     className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
                                                     checked={isChecked}
                                                     onChange={(e) => handleModalityServiceChange(service, e.target.checked)}
+                                                    disabled={isReadOnly}
                                                 />
                                                 <span className="text-sm font-medium text-gray-700">{service}</span>
                                             </label>
@@ -733,7 +746,7 @@ const OperationPlan: React.FC = () => {
                             </div>
                         )}
                         {activeTab === 'documents' && (
-                            <DocumentManager operation={plan} onUpdate={handleDocumentUpdate as any} />
+                            <DocumentManager operation={plan} onUpdate={handleDocumentUpdate as any} isReadOnly={isReadOnly}/>
                         )}
                     </div>
                 </div>

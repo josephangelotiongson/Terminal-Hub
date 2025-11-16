@@ -38,7 +38,8 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 
 // Card component
 const KanbanCard: React.FC<{ op: Operation; hasIssues: boolean; issues: string[]; stage: string }> = ({ op, hasIssues, issues, stage }) => {
-    const { switchView, settings, currentUser, currentTerminalSettings, holds, updatePreArrivalCheck, updateVesselServiceStatus } = useContext(AppContext)!;
+    // FIX: Replaced `updateVesselServiceStatus` with `updateOperationServiceStatus` as it does not exist on the context type.
+    const { switchView, settings, currentUser, currentTerminalSettings, holds, updatePreArrivalCheck, updateOperationServiceStatus } = useContext(AppContext)!;
     const isCommercials = currentUser.role === 'Commercials';
     const borderColorClass = getOperationBorderColorClass(op);
     const firstTransfer = op.transferPlan?.[0]?.transfers?.[0];
@@ -209,7 +210,7 @@ const KanbanCard: React.FC<{ op: Operation; hasIssues: boolean; issues: string[]
                                                 {check.type === 'service' && (
                                                      <select
                                                         value={check.status}
-                                                        onChange={e => updateVesselServiceStatus(op.id, check.name, e.target.value as any)}
+                                                        onChange={e => updateOperationServiceStatus(op.id, check.name, e.target.value as any)}
                                                         className="!py-0 !px-1 text-xs !h-6"
                                                         onClick={e => e.stopPropagation()} // Prevent card click
                                                     >

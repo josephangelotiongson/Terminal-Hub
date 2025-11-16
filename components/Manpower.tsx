@@ -1,4 +1,5 @@
 
+
 import React, { useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppContext } from '../context/AppContext';
 import { User, Modality, ManpowerSchedule } from '../types';
@@ -139,6 +140,7 @@ const OperatorCard: React.FC<{ user: User; isLead: boolean; onAssignClick: (user
 // #region -------- SWIMLANE --------
 
 type Shift = 'Off' | 'Day' | 'Swing' | 'Night';
+type ShiftTimes = { [key in 'Day' | 'Swing' | 'Night']: { start: string, end: string } };
 
 const Swimlane: React.FC<{
     shift: Shift;
@@ -228,16 +230,15 @@ const OperatorRoster = () => {
 // #endregion
 
 // #region -------- ASSIGNMENTS COMPONENT --------
-const OperatorAssignments = () => {
+interface OperatorAssignmentsProps {
+    shiftTimes: ShiftTimes;
+    setShiftTimes: React.Dispatch<React.SetStateAction<ShiftTimes>>;
+}
+
+const OperatorAssignments: React.FC<OperatorAssignmentsProps> = ({ shiftTimes, setShiftTimes }) => {
     const { users, currentUser, updateUserShift } = useContext(AppContext)!;
     const [isLead] = useState(currentUser.role === 'Operations Lead' || !!currentUser.delegatedBy);
     const [assigningUser, setAssigningUser] = useState<User | null>(null);
-
-    const [shiftTimes, setShiftTimes] = useState<{ [key in 'Day' | 'Swing' | 'Night']: { start: string, end: string } }>({
-        Day: { start: '06:00', end: '14:00' },
-        Swing: { start: '14:00', end: '22:00' },
-        Night: { start: '22:00', end: '06:00' },
-    });
 
     const handleTimeChange = (shift: Shift, type: 'start' | 'end', value: string) => {
         if (shift === 'Off') return;
@@ -285,21 +286,118 @@ const OperatorAssignments = () => {
 // #region -------- MAIN MANPOWER COMPONENT --------
 const Manpower: React.FC = () => {
     const [activeTab, setActiveTab] = useState<'roster' | 'assignments' | 'planning-board'>('assignments');
+    const { users } = useContext(AppContext)!;
+    
+    const [shiftTimes, setShiftTimes] = useState<ShiftTimes>({
+        Day: { start: '06:00', end: '14:00' },
+        Swing: { start: '14:00', end: '22:00' },
+        Night: { start: '22:00', end: '06:00' },
+    });
+
+    const [selectedOperators, setSelectedOperators] = useState<string[]>(['All']);
+    const [isOperatorFilterOpen, setIsOperatorFilterOpen] = useState(false);
+    const operatorFilterRef = useRef<HTMLDivElement>(null);
+
+    const operatorUsers = useMemo(() => users.filter(u => u.role === 'Operator'), [users]);
+    const allOperatorNames = useMemo(() => operatorUsers.map(u => u.name).sort(), [operatorUsers]);
+
+    const filteredOperatorUsers = useMemo(() => {
+        if (selectedOperators.includes('All')) {
+            return operatorUsers;
+        }
+        return operatorUsers.filter(u => selectedOperators.includes(u.name));
+    }, [operatorUsers, selectedOperators]);
+
+    useEffect(() => {
+        const handleClickOutside = (e: MouseEvent) => {
+            if (isOperatorFilterOpen && operatorFilterRef.current && !operatorFilterRef.current.contains(e.target as Node)) {
+                setIsOperatorFilterOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [isOperatorFilterOpen]);
+
+    const handleOperatorFilterChange = (operatorName: string) => {
+        setSelectedOperators(prev => {
+            if (operatorName === 'All') {
+                return prev.includes('All') ? [] : ['All'];
+            }
+    
+            const currentSelection = prev.includes('All') ? allOperatorNames : prev;
+            const newSelection = new Set(currentSelection);
+    
+            if (newSelection.has(operatorName)) {
+                newSelection.delete(operatorName);
+            } else {
+                newSelection.add(operatorName);
+            }
+            
+            const finalSelection = Array.from(newSelection);
+    
+            if (finalSelection.length === allOperatorNames.length || finalSelection.length === 0) {
+                return ['All'];
+            }
+    
+            return finalSelection;
+        });
+    };
+
+    const isAllOperatorsSelected = selectedOperators.includes('All');
+
 
     return (
         <div>
             <div className="sticky top-0 z-10 bg-background-body p-3 sm:p-6">
-                <div className="border-b border-border-primary">
+                <div className="border-b border-border-primary flex justify-between items-center">
                     <nav className="-mb-px flex space-x-6" aria-label="Tabs">
                         <button onClick={() => setActiveTab('roster')} className={`tab ${activeTab === 'roster' ? 'active' : ''}`}>Operator Roster</button>
                         <button onClick={() => setActiveTab('assignments')} className={`tab ${activeTab === 'assignments' ? 'active' : ''}`}>Operator Assignments</button>
                         <button onClick={() => setActiveTab('planning-board')} className={`tab ${activeTab === 'planning-board' ? 'active' : ''}`}>Manpower Planning Board</button>
                     </nav>
+
+                    {activeTab === 'planning-board' && (
+                        <div ref={operatorFilterRef} className="relative">
+                            <button onClick={() => setIsOperatorFilterOpen(prev => !prev)} className="btn-secondary !py-2">
+                                <i className="fas fa-user-cog mr-2"></i>
+                                Operators ({isAllOperatorsSelected ? 'All' : selectedOperators.length})
+                            </button>
+                            {isOperatorFilterOpen && (
+                                <div className="absolute top-full right-0 mt-2 w-60 bg-white border rounded-lg shadow-xl z-30 p-3">
+                                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                                        <label className="flex items-center space-x-3 p-1 rounded hover:bg-slate-50 cursor-pointer font-semibold">
+                                            <input
+                                                type="checkbox"
+                                                className="h-4 w-4 rounded border-gray-300 text-brand-primary focus:ring-brand-primary"
+                                                checked={isAllOperatorsSelected}
+                                                onChange={() => handleOperatorFilterChange('All')}
+                                            />
+                                            <span>All Operators</span>
+                                        </label>
+                                        <hr/>
+                                        {allOperatorNames.map(name => (
+                                            <label key={name} className="flex items-center space-x-3 p-1 rounded hover:bg-slate-50 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    className="h-4 w-4 rounded border-gray-300 text-brand-primary focus:ring-brand-primary"
+                                                    checked={isAllOperatorsSelected || selectedOperators.includes(name)}
+                                                    onChange={() => handleOperatorFilterChange(name)}
+                                                />
+                                                <span className="text-sm">{name}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
             {activeTab === 'roster' && <div className="p-3 sm:p-6"><OperatorRoster /></div>}
-            {activeTab === 'assignments' && <div className="p-3 sm:p-6"><OperatorAssignments /></div>}
-            {activeTab === 'planning-board' && <PlanningBoard isReadOnly={true} />}
+            {activeTab === 'assignments' && <div className="p-3 sm:p-6"><OperatorAssignments shiftTimes={shiftTimes} setShiftTimes={setShiftTimes} /></div>}
+            {activeTab === 'planning-board' && <PlanningBoard isReadOnly={true} operatorUsers={filteredOperatorUsers} shiftTimes={shiftTimes} />}
         </div>
     );
 };

@@ -161,7 +161,12 @@ const TruckRejectionModal: React.FC<TruckRejectionModalProps> = ({ isOpen, onClo
                             <button onClick={() => fileInputRef.current?.click()} className="btn-secondary flex-1">
                                 <i className="fas fa-upload mr-2"></i>Upload Photo
                             </button>
-                            <button onClick={handleTakePhotoClick} className="btn-secondary flex-1">
+                            <button
+                                onClick={handleTakePhotoClick}
+                                className="btn-secondary flex-1 opacity-50 cursor-not-allowed"
+                                disabled
+                                title="Camera functionality is disabled for this demo."
+                            >
                                 <i className="fas fa-camera mr-2"></i>Take Photo
                             </button>
                         </div>

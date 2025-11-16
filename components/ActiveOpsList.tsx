@@ -1,7 +1,8 @@
+
 import React, { useContext, useMemo, useState } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, Modality, ScadaData } from '../types';
-import { calculateOperationValue, formatCurrency, formatInfraName, naturalSort, getOperationBorderColorClass, createDocklineToWharfMap, calculateOperationProgress, getActiveTransfers, canDispatchTrucks } from '../utils/helpers';
+import { calculateOperationValue, formatCurrency, formatInfraName, naturalSort, getOperationBorderColorClass, createDocklineToWharfMap, calculateOperationProgress, getActiveTransfers, canDispatchTrucks, canClearBay } from '../utils/helpers';
 import CallOffTruckModal from './CallOffTruckModal';
 
 // This helper determines if an active operation is physically at its designated asset.
@@ -11,8 +12,9 @@ const isAtAsset = (op: Operation): boolean => {
     }
 
     if (op.modality === 'truck') {
-        // A truck is considered "at the asset" if it's been directed there, is on the bay, or is in a later stage.
-        const atAssetStatuses = ['Directed to Bay', 'On Bay', 'Loading', 'Pumping', 'Completing', 'Awaiting Departure'];
+        // A truck is considered physically occupying the bay asset if it is directed there, on the bay, or loading.
+        // Post-loading activities like weighing and paperwork mean the bay can be cleared for the next op.
+        const atAssetStatuses = ['Directed to Bay', 'On Bay', 'Loading'];
         return atAssetStatuses.includes(op.truckStatus || '');
     }
     if (op.modality === 'vessel') {
@@ -192,16 +194,44 @@ const AvailableCard: React.FC<{ onClick: () => void; disabled: boolean }> = ({ o
     </div>
 );
 
+const CompletedCard: React.FC<{ op: Operation; onClear: () => void; canClear: boolean }> = ({ op, onClear, canClear }) => {
+    return (
+        <div className="card p-4 sm:p-5 h-full flex flex-col justify-between border-l-4 border-slate-500 bg-slate-50">
+            <div>
+                <div className="flex justify-between items-start">
+                    <h4 className="font-bold text-slate-500">Bay Clear Required</h4>
+                    <span className="text-xs font-semibold bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">COMPLETED</span>
+                </div>
+                <div className="mt-2 text-sm text-text-secondary">
+                    <p>Last truck:</p>
+                    <p className="font-bold text-lg text-text-primary">{op.licensePlate}</p>
+                    <p className="text-xs">Completed at: {op.completedTime ? new Date(op.completedTime).toLocaleTimeString() : 'N/A'}</p>
+                </div>
+            </div>
+            <button
+                onClick={onClear}
+                disabled={!canClear}
+                className="btn-secondary w-full mt-4 !bg-white hover:!bg-slate-100 disabled:opacity-50"
+                title={canClear ? "Mark bay as clear and available" : "Permission Denied"}
+            >
+                <i className="fas fa-check-circle mr-2"></i>
+                Clear Bay for Next Truck
+            </button>
+        </div>
+    );
+};
+
 const ActiveOpsList: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return <p>Loading...</p>;
 
-    const { operations, selectedTerminal, workspaceFilter, workspaceSearchTerm, currentTerminalSettings, visibleInfrastructure, currentUser, scadaData, revertCallOff } = context;
+    const { operations, selectedTerminal, workspaceFilter, workspaceSearchTerm, currentTerminalSettings, visibleInfrastructure, currentUser, scadaData, revertCallOff, lastCompletedOpByInfra, clearBayForNextOp, getOperationById } = context;
     
     const [isCallOffModalOpen, setIsCallOffModalOpen] = useState(false);
     const [selectedBay, setSelectedBay] = useState<string | null>(null);
 
     const canDispatch = canDispatchTrucks(currentUser);
+    const canClear = canClearBay(currentUser);
 
     const handleAvailableClick = (infraId: string) => {
         setSelectedBay(infraId);
@@ -337,14 +367,24 @@ const ActiveOpsList: React.FC = () => {
                              <div>
                                 <h3 className="text-2xl font-bold text-brand-dark mb-4">Truck Bays</h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6">
-                                    {truckAssets.map(({ infraId, operation }) => (
-                                         <div key={infraId}>
-                                            <div className="flex justify-between items-baseline mb-1">
-                                                <h4 className="font-semibold text-text-secondary">{formatInfraName(infraId)}</h4>
+                                    {truckAssets.map(({ infraId, operation }) => {
+                                        const lastCompletedOpId = lastCompletedOpByInfra[infraId];
+                                        const lastCompletedOp = lastCompletedOpId ? getOperationById(lastCompletedOpId) : null;
+                                        return (
+                                             <div key={infraId}>
+                                                <div className="flex justify-between items-baseline mb-1">
+                                                    <h4 className="font-semibold text-text-secondary">{formatInfraName(infraId)}</h4>
+                                                </div>
+                                                {operation ? (
+                                                    <OperationCard operation={operation} scadaData={scadaData} infraId={infraId} />
+                                                ) : lastCompletedOp ? (
+                                                    <CompletedCard op={lastCompletedOp} onClear={() => clearBayForNextOp(infraId)} canClear={canClear} />
+                                                ) : (
+                                                    <AvailableCard onClick={() => handleAvailableClick(infraId)} disabled={!canDispatch} />
+                                                )}
                                             </div>
-                                            {operation ? <OperationCard operation={operation} scadaData={scadaData} infraId={infraId} /> : <AvailableCard onClick={() => handleAvailableClick(infraId)} disabled={!canDispatch} />}
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}

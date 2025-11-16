@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useContext, useMemo } from 'react';
 import Modal from './Modal';
 import { Operation, Modality, Transfer, SpecialServiceData, TransferPlanItem } from '../types';
@@ -119,7 +121,7 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
     const [truckRailDuration, setTruckRailDuration] = useState(1);
     const [licensePlate, setLicensePlate] = useState('');
     const [driverName, setDriverName] = useState('');
-    const [simpleTransfer, setSimpleTransfer] = useState<Partial<Transfer>>({});
+    const [simpleTransfer, setSimpleTransfer] = useState<Partial<Transfer>>({ specialServices: [] });
     const [infrastructureId, setInfrastructureId] = useState('');
 
     // Vessel State
@@ -170,7 +172,7 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
             setVesselRequirements([]);
         } else {
             setTruckRailDuration(getDefaultDuration(newModality));
-            setSimpleTransfer({ customer: '', product: '', tonnes: 0, direction: MODALITY_DIRECTIONS[newModality][0] });
+            setSimpleTransfer({ customer: '', product: '', tonnes: 0, direction: MODALITY_DIRECTIONS[newModality][0], specialServices: [] });
             setInfrastructureId('');
         }
     };
@@ -211,7 +213,11 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
             }
             createNewOperation({
                 modality, transportId: truckRailTransportId, eta: truckRailEta, durationHours: truckRailDuration,
-                licensePlate, driverName, transfer: simpleTransfer,
+                licensePlate, driverName, 
+                transfer: {
+                    ...simpleTransfer,
+                    specialServices: simpleTransfer.specialServices || [], // Ensure it's passed
+                },
                 transferPlan: [{ infrastructureId, transfers: [] }]
             });
         }
@@ -293,6 +299,30 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
         );
     }, [modality, vesselTransportId, transfers, truckRailTransportId, simpleTransfer, infrastructureId]);
 
+    const availableModalityServices = useMemo(() => {
+        if (modality === 'vessel') return []; // Handled separately
+        const modServices = settings.modalityServices?.[modality] || [];
+        const prodServices = settings.productServices || [];
+        return [...new Set([...modServices, ...prodServices])].sort();
+    }, [settings, modality]);
+
+    const handleSimpleServiceChange = (serviceName: string, isChecked: boolean) => {
+        setSimpleTransfer(prev => {
+            const currentServices = prev.specialServices || [];
+            let newServices: SpecialServiceData[];
+            if (isChecked) {
+                if (!currentServices.some(s => s.name === serviceName)) {
+                    newServices = [...currentServices, { name: serviceName, data: { status: 'pending' } }];
+                } else {
+                    newServices = currentServices;
+                }
+            } else {
+                newServices = currentServices.filter(s => s.name !== serviceName);
+            }
+            return { ...prev, specialServices: newServices };
+        });
+    };
+
     return (
         <Modal isOpen={isOpen} onClose={onClose} title={`Create New ${modality} Order`} footer={<><button onClick={onClose} className="btn-secondary">Cancel</button><button onClick={handleCreate} disabled={!isFormValid} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">Create Order</button></>}>
             <div className="space-y-6">
@@ -365,6 +395,26 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
                                         {availableTanks.length === 0 && simpleTransfer.product && <p className="text-xs text-red-500 mt-1">No tanks available for this product/bay combination.</p>}
                                     </div>
                                 )}
+                            </div>
+                        </div>
+                        <div className="p-4 border-t">
+                            <h4 className="font-semibold text-lg mb-2">Services</h4>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                {availableModalityServices.map(service => {
+                                    const isChecked = (simpleTransfer.specialServices || []).some(s => s.name === service);
+                                    return (
+                                        <label key={service} className="flex items-center space-x-2 p-1 rounded-md hover:bg-slate-50 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
+                                                checked={isChecked}
+                                                onChange={(e) => handleSimpleServiceChange(service, e.target.checked)}
+                                            />
+                                            <span className="text-sm font-medium text-gray-700">{service}</span>
+                                        </label>
+                                    );
+                                })}
+                                {availableModalityServices.length === 0 && <p className="text-xs text-slate-400 italic">No services available for this modality.</p>}
                             </div>
                         </div>
                     </div>

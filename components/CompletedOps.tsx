@@ -2,18 +2,9 @@ import React, { useContext, useMemo, useState, useEffect } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, Modality } from '../types';
 import CompletedOpDetailsModal from './CompletedOpDetailsModal';
-import { calculateOperationValue, formatCurrency, canEditCompletedOpFinancials } from '../utils/helpers';
+import { calculateOperationValue, formatCurrency, canEditCompletedOpFinancials, calculateActualDuration, getIcon } from '../utils/helpers';
 import ModalityFilter from './ModalityFilter';
 import WorkspaceSearch from './WorkspaceSearch';
-
-const getIcon = (modality: Modality): string => {
-    switch (modality) {
-        case 'vessel': return 'fa-ship';
-        case 'truck': return 'fa-truck';
-        case 'rail': return 'fa-train';
-        default: return '';
-    }
-};
 
 const EditableCell: React.FC<{
     value: string | number;
@@ -160,23 +151,59 @@ const TruckReportTable: React.FC<{
     );
 };
 
+const CompletedOpCard: React.FC<{ op: Operation; onViewDetails: (op: Operation) => void }> = ({ op, onViewDetails }) => {
+    const plannedTonnes = useMemo(() => op.transferPlan.reduce((sum, line) => sum + line.transfers.reduce((s, t) => s + t.tonnes, 0), 0), [op.transferPlan]);
+    const actualTonnes = useMemo(() => op.transferPlan.reduce((sum, line) => sum + line.transfers.reduce((s, t) => s + (t.loadedWeight || t.transferredTonnes || 0), 0), 0), [op.transferPlan]);
+    const plannedDuration = op.durationHours || 0;
+    const actualDuration = useMemo(() => calculateActualDuration(op), [op]);
+
+    const firstTransfer = op.transferPlan[0]?.transfers[0];
+
+    return (
+        <div onClick={() => onViewDetails(op)} className="card p-3 flex items-center gap-4 cursor-pointer hover:bg-slate-50 transition-colors">
+            <div className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-slate-100 rounded-lg">
+                <i className={`fas ${getIcon(op.modality)} text-2xl text-slate-500`}></i>
+            </div>
+            <div className="flex-grow grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-4 items-center">
+                <div className="md:col-span-2">
+                    <p className="font-bold text-base truncate">{op.transportId} {op.licensePlate && <span className="font-mono text-sm">({op.licensePlate})</span>}</p>
+                    <p className="text-xs text-text-secondary">{op.completedTime ? new Date(op.completedTime).toLocaleString() : 'N/A'}</p>
+                </div>
+                <div>
+                    <p className="font-semibold text-sm truncate">{firstTransfer?.customer}</p>
+                    <p className="text-xs text-text-tertiary truncate">{firstTransfer?.product}</p>
+                </div>
+                <div className="text-sm">
+                    <p className="font-semibold text-text-secondary">Volume (T)</p>
+                    <p className="font-mono">{actualTonnes.toFixed(2)} / {plannedTonnes.toFixed(2)}</p>
+                </div>
+                <div className="text-sm">
+                    <p className="font-semibold text-text-secondary">Duration (Hrs)</p>
+                    <p className="font-mono">{actualDuration.toFixed(2)} / {plannedDuration.toFixed(2)}</p>
+                </div>
+            </div>
+            <div className="flex-shrink-0">
+                <i className="fas fa-chevron-right text-text-tertiary"></i>
+            </div>
+        </div>
+    );
+};
 
 const CompletedOps: React.FC = () => {
     const context = useContext(AppContext);
     if (!context) return <p>Loading...</p>;
 
-    const { operations, selectedTerminal, workspaceFilter, setWorkspaceFilter, workspaceSearchTerm, setWorkspaceSearchTerm, settings, updateCompletedOperationDetails, currentUser } = context;
+    // FIX: Aliased 'setWorkspaceSearchTerm' to 'setSearchTerm' to match prop expected by WorkspaceSearch component.
+    const { operations, selectedTerminal, workspaceFilter, setWorkspaceFilter, workspaceSearchTerm, setWorkspaceSearchTerm: setSearchTerm, settings, updateCompletedOperationDetails, currentUser, uiState, setCompletedOpsTab } = context;
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedOp, setSelectedOp] = useState<Operation | null>(null);
+    const activeTab = uiState.completedOps?.activeTab || 'list';
 
     const canEditFinancials = canEditCompletedOpFinancials(currentUser);
     
-    useEffect(() => {
-        if (workspaceFilter === 'all') {
-            setWorkspaceFilter('vessel');
-        }
-    }, [workspaceFilter, setWorkspaceFilter]);
-
+    // If the global filter is 'all', default to showing 'vessel' for the report view, but don't change the global state.
+    const reportFilter = workspaceFilter === 'all' ? 'vessel' : workspaceFilter;
+    
     const completedOps = useMemo(() => {
         return operations.filter(op => 
             op.terminal === selectedTerminal &&
@@ -188,10 +215,13 @@ const CompletedOps: React.FC = () => {
                 op.licensePlate?.toLowerCase().includes(term) ||
                 op.driverName?.toLowerCase().includes(term) ||
                 op.transferPlan.some(tp => tp.transfers.some(t => t.product?.toLowerCase().includes(term) || t.customer?.toLowerCase().includes(term)));
-        });
+        }).sort((a,b) => new Date(b.completedTime!).getTime() - new Date(a.completedTime!).getTime());
     }, [operations, selectedTerminal, workspaceSearchTerm]);
 
     const vesselReportRows = useMemo(() => {
+        // This is computationally expensive, so only run if the view is active.
+        if(activeTab !== 'report' || reportFilter !== 'vessel') return [];
+
         const rows = completedOps.filter(op => op.modality === 'vessel').flatMap(op => {
             const opValue = calculateOperationValue(op, settings);
             let alongsideHours: string | number = 'N/A';
@@ -223,11 +253,13 @@ const CompletedOps: React.FC = () => {
                 };
             }));
         });
-        rows.sort((a, b) => new Date(b.movementDate!).getTime() - new Date(a.movementDate!).getTime());
         return rows;
-    }, [completedOps, settings]);
+    }, [completedOps, settings, activeTab, reportFilter]);
 
     const truckReportRows = useMemo(() => {
+        // This is computationally expensive, so only run if the view is active.
+        if(activeTab !== 'report' || reportFilter !== 'truck') return [];
+        
         const getDuration = (start?: string, end?: string): number => {
             if (!start || !end) return 0;
             const durationMs = new Date(end).getTime() - new Date(start).getTime();
@@ -258,9 +290,15 @@ const CompletedOps: React.FC = () => {
                 invoicedAmount: opValue.totalValue, dateInvoiced: op.dateInvoiced, originalOp: op
             };
         });
-        rows.sort((a, b) => new Date(b.completedTime!).getTime() - new Date(a.completedTime!).getTime());
         return rows;
-    }, [completedOps, settings]);
+    }, [completedOps, settings, activeTab, reportFilter]);
+
+    const listOps = useMemo(() => {
+        return completedOps.filter(op => {
+            if (workspaceFilter === 'all') return true;
+            return op.modality === workspaceFilter;
+        });
+    }, [completedOps, workspaceFilter]);
 
     const handleViewDetails = (op: Operation) => {
         setSelectedOp(op);
@@ -277,35 +315,49 @@ const CompletedOps: React.FC = () => {
         else if (isTransferField) updateCompletedOperationDetails(opId, {}, transferId, { [field]: value });
     };
     
-    const activeRows = workspaceFilter === 'vessel' ? vesselReportRows : workspaceFilter === 'truck' ? truckReportRows : [];
+    const activeReportRows = reportFilter === 'vessel' ? vesselReportRows : reportFilter === 'truck' ? truckReportRows : [];
     
     return (
         <>
             <CompletedOpDetailsModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} operation={selectedOp} />
             <div className="p-3 sm:p-6 flex flex-col h-full">
                 <div className="pb-4 flex justify-between items-center gap-4 flex-wrap">
-                    <h2 className="text-2xl font-bold text-brand-dark">Completed Operations Report</h2>
+                    <h2 className="text-2xl font-bold text-brand-dark">Completed Operations</h2>
                     <div className="flex items-center gap-4">
-                        <WorkspaceSearch searchTerm={workspaceSearchTerm} setSearchTerm={setWorkspaceSearchTerm} />
-                        <ModalityFilter filter={workspaceFilter} setFilter={setWorkspaceFilter} showAllOption={false} />
+                        <WorkspaceSearch searchTerm={workspaceSearchTerm} setSearchTerm={setSearchTerm} />
+                        <ModalityFilter filter={workspaceFilter} setFilter={setWorkspaceFilter} showAllOption={true} />
                     </div>
                 </div>
-                <div className="flex-grow overflow-auto border border-slate-200 rounded-lg">
-                    {workspaceFilter === 'vessel' && (
-                        <VesselReportTable rows={vesselReportRows} onViewDetails={handleViewDetails} onUpdate={handleUpdate} canEditFinancials={canEditFinancials} />
-                    )}
-                    {workspaceFilter === 'truck' && (
-                        <TruckReportTable rows={truckReportRows} onViewDetails={handleViewDetails} onUpdate={handleUpdate} canEditFinancials={canEditFinancials} />
-                    )}
-                    {workspaceFilter === 'rail' && (
-                        <div className="text-center p-8 text-text-secondary">
-                            <p>Rail report is coming soon.</p>
+
+                <div className="border-b border-border-primary">
+                    <nav className="-mb-px flex space-x-6">
+                        <button onClick={() => setCompletedOpsTab('report')} className={`tab ${activeTab === 'report' ? 'active' : ''}`}>
+                            {reportFilter.charAt(0).toUpperCase() + reportFilter.slice(1)} Report
+                        </button>
+                        <button onClick={() => setCompletedOpsTab('list')} className={`tab ${activeTab === 'list' ? 'active' : ''}`}>
+                            Order List
+                        </button>
+                    </nav>
+                </div>
+
+                <div className="flex-grow overflow-auto pt-4">
+                    {activeTab === 'report' && (
+                        <div className="border border-slate-200 rounded-lg overflow-auto">
+                            {reportFilter === 'vessel' && <VesselReportTable rows={vesselReportRows} onViewDetails={handleViewDetails} onUpdate={handleUpdate} canEditFinancials={canEditFinancials} />}
+                            {reportFilter === 'truck' && <TruckReportTable rows={truckReportRows} onViewDetails={handleViewDetails} onUpdate={handleUpdate} canEditFinancials={canEditFinancials} />}
+                            {reportFilter === 'rail' && <div className="text-center p-8 text-text-secondary"><p>Rail report is coming soon.</p></div>}
+                            {activeReportRows.length === 0 && reportFilter !== 'rail' && <div className="text-center p-8 text-text-secondary"><p>No completed {reportFilter} operations match the current filter.</p></div>}
                         </div>
                     )}
-
-                    {activeRows.length === 0 && workspaceFilter !== 'rail' && (
-                        <div className="text-center p-8 text-text-secondary">
-                            <p>No completed operations match the current filter.</p>
+                    {activeTab === 'list' && (
+                        <div className="space-y-3">
+                            {listOps.length > 0 ? (
+                                listOps.map(op => <CompletedOpCard key={op.id} op={op} onViewDetails={handleViewDetails} />)
+                            ) : (
+                                <div className="text-center p-8 text-text-secondary">
+                                    <p>No completed operations match the current filter.</p>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

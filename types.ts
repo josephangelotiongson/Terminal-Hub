@@ -1,6 +1,7 @@
 
 
 
+
 // FIX: Removed circular dependency by defining and exporting the 'Modality' type directly in this file.
 export type Modality = 'vessel' | 'truck' | 'rail';
 
@@ -28,7 +29,7 @@ export type View =
     'user-permissions' |
     'manpower';
 
-export type ActivityAction = 'CREATE' | 'UPDATE' | 'SOF_UPDATE' | 'STATUS_UPDATE' | 'REQUEUE' | 'DATA_LOG' | 'COMMENT' | 'SOF_EDIT' | 'SOF_REVERT' | 'REPORT_UPDATE' | 'DOCUMENT_UPLOAD' | 'DOCUMENT_DELETE' | 'SIGNATURE' | string;
+export type ActivityAction = 'CREATE' | 'UPDATE' | 'SOF_UPDATE' | 'STATUS_UPDATE' | 'REQUEUE' | 'DATA_LOG' | 'COMMENT' | 'SOF_EDIT' | 'SOF_REVERT' | 'REPORT_UPDATE' | 'DOCUMENT_UPLOAD' | 'DOCUMENT_DELETE' | 'SIGNATURE' | 'REQUEUE_REQUEST' | string;
 
 export type WorkOrderStatus = 'Requested' | 'Acknowledged' | 'In Progress' | 'Pending Parts' | 'Completed' | 'Closed';
 
@@ -71,7 +72,7 @@ export interface ActivityLogItem {
 
 export interface SOFItem {
     event: string;
-    status: 'pending' | 'in-progress' | 'complete';
+    status: 'pending' | 'in-progress' | 'complete' | 'skipped';
     time: string;
     user: string;
     loop: number;
@@ -143,6 +144,7 @@ export interface RequeueDetails {
     time: string;
     details: any;
     priority?: 'high' | 'normal';
+    isRequest?: boolean;
 }
 
 export interface DipSheetEntry {
@@ -341,6 +343,21 @@ export interface ScadaData {
 
 export interface UIState {
     planningViewMode: 'grid' | 'list' | 'kanban';
+    columnVisibility?: {
+        [terminal: string]: {
+            [modality: string]: string[];
+        }
+    };
+    reports?: {
+        reportType: ReportType;
+        startDate: string;
+        endDate: string;
+        customer: string;
+        productGroup: string;
+    };
+    completedOps?: {
+        activeTab: 'report' | 'list';
+    };
 }
 
 export interface ViewHistoryItem {

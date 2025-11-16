@@ -1,7 +1,5 @@
 {
-  "name": "Terminal Hub",
+  "name": " Terminal Hub v2",
   "description": "A comprehensive operational planning and management dashboard for logistics terminals, handling vessel, truck, and rail logistics. It provides a real-time view of active operations, a planning board for future tasks, and tools for managing master data and system configurations.",
-  "requestFramePermissions": [
-    "camera"
-  ]
+  "requestFramePermissions": []
 }

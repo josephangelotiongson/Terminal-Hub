@@ -55,3 +55,13 @@ export const TRUCK_REJECTION_REASONS = [
     "Equipment Re-check Required",
     "Other"
 ];
+
+export const OPERATOR_RESCHEDULE_REASONS = [
+    "Minor Equipment Issue (On Asset)",
+    "Safety Concern (Needs Review)",
+    "Process Anomaly (Needs Supervisor)",
+    "Short-staffed for current task",
+    "Weather condition change",
+    "Vessel/Truck not ready",
+    "Other (Specify in notes)"
+];

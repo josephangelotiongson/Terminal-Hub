@@ -1,7 +1,4 @@
-import { AppSettings, Modality, TerminalSettings, ContractRates, Operation, ActivityLogItem, SOFItem, Hold } from '../types';
-import { VESSEL_COMMON_EVENTS, VESSEL_COMMODITY_EVENTS, SOF_EVENTS_MODALITY } from '../constants';
-// FIX: Corrected typo in imported function name from deriveTruckStatusFromSof to deriveStatusFromSof.
-import { deriveStatusFromSof, validateOperationPlan } from '../utils/helpers';
+import { AppSettings, Modality, TerminalSettings, ContractRates } from '../types';
 
 // ===================================================================================
 //  EXPANDED MASTER DATA
@@ -246,23 +243,23 @@ const subHours = (date: Date, hours: number) => new Date(date.getTime() - hours 
  * @returns An object containing the updated SOF array and the timestamp of the last completed event.
  */
 const progressSofArray = (
-    sofArray: SOFItem[], 
+    sofArray: any[], 
     allEvents: string[], 
     targetEvent: string, 
     baseTime: Date, 
     user: string,
     stepMinutes: number = 5,
     logContext: string = ''
-): { updatedSof: SOFItem[], lastTime: Date, activityLogs: ActivityLogItem[] } => {
+): { updatedSof: any[], lastTime: Date, activityLogs: any[] } => {
     const newSof = JSON.parse(JSON.stringify(sofArray));
     const targetIndex = allEvents.findIndex(e => e === targetEvent);
     let lastTime = baseTime;
-    const activityLogs: ActivityLogItem[] = [];
+    const activityLogs: any[] = [];
 
     if (targetIndex > -1) {
         for (let i = 0; i <= targetIndex; i++) {
             const eventName = allEvents[i];
-            const eventIndexInSof = newSof.findIndex((s: SOFItem) => s.event === eventName);
+            const eventIndexInSof = newSof.findIndex((s: any) => s.event === eventName);
             if (eventIndexInSof > -1) {
                 lastTime = addMinutes(baseTime, i * stepMinutes);
                 newSof[eventIndexInSof] = {
@@ -284,7 +281,7 @@ const progressSofArray = (
 };
 
 
-export const createMockHolds = (terminal: string): Hold[] => {
+export const createMockHolds = (terminal: string): any[] => {
     if (terminal !== 'PAL') {
         return [];
     }
@@ -295,7 +292,7 @@ export const createMockHolds = (terminal: string): Hold[] => {
     baseTime.setMinutes(baseTime.getMinutes() > 30 ? 60 : 30, 0, 0);
 
 
-    const holds: Hold[] = [
+    const holds: any[] = [
         {
             id: 'hold-maint-bay2', resource: 'Bay 2', terminal: 'PAL',
             startTime: addHours(baseTime, 1).toISOString(),

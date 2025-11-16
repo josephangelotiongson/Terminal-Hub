@@ -4,9 +4,10 @@ import { MOCK_CURRENT_TIME } from '../constants';
 interface DateTimePickerProps {
     value: string; // ISO string
     onChange: (isoString: string) => void;
+    disabled?: boolean;
 }
 
-const DateTimePicker: React.FC<DateTimePickerProps> = ({ value, onChange }) => {
+const DateTimePicker: React.FC<DateTimePickerProps> = ({ value, onChange, disabled }) => {
     const [datePart, setDatePart] = useState('');
     const [timePart, setTimePart] = useState('');
 
@@ -78,11 +79,13 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({ value, onChange }) => {
                 value={datePart}
                 onChange={handleDateChange}
                 className="w-1/2"
+                disabled={disabled}
             />
             <select
                 value={timePart}
                 onChange={handleTimeChange}
                 className="w-1/2"
+                disabled={disabled}
             >
                 {timeOptions.map(time => (
                     <option key={time} value={time}>{time}</option>

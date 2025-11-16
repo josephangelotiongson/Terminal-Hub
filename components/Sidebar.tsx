@@ -2,7 +2,7 @@
 
 import React, { useContext } from 'react';
 import { AppContext } from '../context/AppContext';
-import { View, User } from 'types';
+import { View, User } from '../types';
 
 const NavLink: React.FC<{
     view: View,
@@ -100,12 +100,18 @@ const Sidebar: React.FC = () => {
                     {isDesktopSidebarCollapsed && <hr className="hidden lg:block my-2 mx-2" />}
                     <div className="space-y-1 mt-2">
                         <NavLink view="dashboard" isActive={currentView === 'dashboard'} icon="fa-tachometer-alt" label="Dashboard" onClick={handleNav('dashboard')} isCollapsed={isDesktopSidebarCollapsed} />
-                        <NavLink view="manpower" isActive={currentView === 'manpower'} icon="fa-users" label="Manpower" onClick={handleNav('manpower')} isCollapsed={isDesktopSidebarCollapsed} />
-                        <NavLink view="outage-planning" isActive={currentView === 'outage-planning'} icon="fa-wrench" label="Outage Planning" onClick={handleNav('outage-planning')} isCollapsed={isDesktopSidebarCollapsed} />
                         <NavLink view="planning" isActive={isPlanningActive} icon="fa-calendar-alt" label="Planning" onClick={handleNav('planning')} isCollapsed={isDesktopSidebarCollapsed} />
                         <NavLink view="active-operations-list" isActive={isActiveOpsActive} icon="fa-cogs" label="Operations" onClick={handleNav('active-operations-list')} isCollapsed={isDesktopSidebarCollapsed} />
-                        <NavLink view="tank-status" isActive={isTankStatusActive} icon="fa-oil-can" label="Tank Status" onClick={handleNav('tank-status')} isCollapsed={isDesktopSidebarCollapsed} />
                         <NavLink view="completed" isActive={currentView === 'completed'} icon="fa-history" label="Completed" onClick={handleNav('completed')} isCollapsed={isDesktopSidebarCollapsed} />
+                    </div>
+                </div>
+                <div>
+                    <h3 className={`px-3 text-xs font-semibold text-text-tertiary uppercase tracking-wider mt-4 ${isDesktopSidebarCollapsed && 'lg:hidden'}`}>Monitoring & Planning</h3>
+                    {isDesktopSidebarCollapsed && <hr className="hidden lg:block my-2 mx-2" />}
+                    <div className="space-y-1 mt-2">
+                        <NavLink view="tank-status" isActive={isTankStatusActive} icon="fa-oil-can" label="Tank Status" onClick={handleNav('tank-status')} isCollapsed={isDesktopSidebarCollapsed} />
+                        <NavLink view="manpower" isActive={currentView === 'manpower'} icon="fa-users" label="Manpower" onClick={handleNav('manpower')} isCollapsed={isDesktopSidebarCollapsed} />
+                        <NavLink view="outage-planning" isActive={currentView === 'outage-planning'} icon="fa-wrench" label="Outage Planning" onClick={handleNav('outage-planning')} isCollapsed={isDesktopSidebarCollapsed} />
                     </div>
                 </div>
                  <div>
