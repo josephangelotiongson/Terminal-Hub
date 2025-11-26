@@ -1,7 +1,8 @@
+
 import React, { useState, useEffect } from 'react';
 import { MOCK_CURRENT_TIME } from '../constants';
 
-const ElapsedTimeBadge: React.FC<{ startTime: string | null; className?: string }> = ({ startTime, className = '' }) => {
+const ElapsedTimeBadge: React.FC<{ startTime: string | null; className?: string; prefix?: string }> = ({ startTime, className = '', prefix = '' }) => {
     const [elapsed, setElapsed] = useState('');
 
     useEffect(() => {
@@ -31,6 +32,7 @@ const ElapsedTimeBadge: React.FC<{ startTime: string | null; className?: string 
 
         calculateElapsed();
         const interval = setInterval(calculateElapsed, 30000); // update every 30s
+        
         return () => clearInterval(interval);
     }, [startTime]);
     
@@ -39,7 +41,7 @@ const ElapsedTimeBadge: React.FC<{ startTime: string | null; className?: string 
     return (
         <span className={`text-xs font-semibold bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full whitespace-nowrap ${className}`}>
             <i className="far fa-clock mr-1"></i>
-            {elapsed}
+            {prefix}{elapsed}
         </span>
     );
 };

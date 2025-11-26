@@ -1,79 +1,37 @@
 
-
-
 import React, { useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppContext } from '../context/AppContext';
-import { SOFItem, ActivityLogItem, SpecialServiceData, Transfer, Operation, TransferPlanItem, Modality, ScadaData, User, Hold, Document, ArrivalChecklist } from '../types';
-import DelayModal from './DelayModal';
-import TankLevelIndicator from './TankLevelIndicator';
-import { calculateOperationProgress, formatInfraName, calculateOperationValue, formatCurrency, formatDateTime, combineToIso, validateOperationPlan, getIcon, canPerformSofAction, canApproveGate, canEditPlan, canReschedule, canRequestReschedule } from '../utils/helpers';
-import { VESSEL_COMMON_EVENTS, SOF_EVENTS_MODALITY, VESSEL_COMMODITY_EVENTS, LINE_CLEANING_EVENTS } from '../constants';
+import { SOFItem, SpecialServiceData, Transfer, Operation, DipSheetEntry, ActivityLogItem, ScadaData, HoseLogEntry, SampleLogEntry, PressureCheckLogEntry, ArrivalChecklist } from '../types';
+import { formatInfraName, interpolate, canPerformSofAction, canApproveGate, validateOperationPlan, calculateOperationProgress, canReschedule, canRequestReschedule, getIcon, canEditPlan } from '../utils/helpers';
 import Modal from './Modal';
-import ShippingLog from './ShippingLog';
+import SignatureModal from './SignatureModal';
 import UndoSofModal from './UndoSofModal';
+import HoseLogModal from './HoseLogModal';
+import SampleLogModal from './SampleLogModal';
 import SofDetailsModal from './SofDetailsModal';
+import PressureCheckModal from './PressureCheckModal';
+import ServiceSlider from './ServiceSlider';
+import ReworkModal from './ReworkModal';
 import TruckRejectionModal from './TruckRejectionModal';
-import DirectToBayModal from './components/DirectToBayModal';
 import RequeuePriorityModal from './RequeuePriorityModal';
 import DocumentManager from './DocumentManager';
 import ProductTransferDetails from './ProductTransferDetails';
-import ReworkModal from './ReworkModal';
-
-const ServiceItem: React.FC<{
-    service: SpecialServiceData;
-    context: string;
-    onStatusChange: (status: 'pending' | 'confirmed' | 'complete') => void;
-}> = ({ service, context, onStatusChange }) => {
-    const { currentUser } = useContext(AppContext)!;
-    const status = service.data?.status || 'pending';
-    const canUpdate = ['Operations Lead', 'Operator'].includes(currentUser.role);
-
-    return (
-        <div className={`p-3 border rounded-lg flex justify-between items-center ${status === 'complete' ? 'bg-green-50' : status === 'confirmed' ? 'bg-blue-50' : 'bg-white'}`}>
-            <div>
-                <p className="font-bold">{service.name}</p>
-                <p className="text-xs text-text-secondary">{context}</p>
-            </div>
-            <div className="flex items-center gap-3">
-                <span className={`px-2 py-0.5 text-xs font-semibold rounded-full ${
-                    status === 'complete' ? 'bg-green-200 text-green-800' :
-                    status === 'confirmed' ? 'bg-blue-200 text-blue-800' :
-                    'bg-yellow-200 text-yellow-800'
-                }`}>
-                    {status.charAt(0).toUpperCase() + status.slice(1)}
-                </span>
-                {canUpdate && status !== 'complete' && (
-                    <button
-                        onClick={() => onStatusChange(status === 'pending' ? 'confirmed' : 'complete')}
-                        className="btn-primary !text-xs !py-1 !px-2"
-                    >
-                        {status === 'pending' ? 'Confirm' : 'Complete'}
-                    </button>
-                )}
-            </div>
-        </div>
-    );
-};
+import ShippingLog from './ShippingLog';
+import DelayModal from './DelayModal';
 
 const isPreviousStepComplete = (sofItems: SOFItem[], currentIndex: number): boolean => {
     if (currentIndex === 0) return true;
     const currentItem = sofItems[currentIndex];
     const previousItem = sofItems[currentIndex - 1];
+
     if (currentItem.loop > previousItem.loop) {
         return true;
     }
+
     return previousItem?.status === 'complete';
 };
 
-const SignatureDisplay: React.FC<{ signature: string; onClick: () => void }> = ({ signature, onClick }) => {
-    const isSigned = signature && signature.startsWith('data:image');
-    return (
-        <div onClick={onClick} className="w-full h-full flex items-center justify-center cursor-pointer hover:bg-slate-100 p-1 min-h-[30px] rounded-md border border-transparent hover:border-slate-300">
-            {isSigned ? <img src={signature} alt="signature" className="h-6 w-auto" /> : <span className="text-blue-600 text-xs font-semibold">SIGN</span>}
-        </div>
-    );
-};
-
+// --- ROBUST SLIDER COMPONENT ---
 const SofSlider: React.FC<{
     status: 'in-progress' | 'complete';
     onComplete: () => void;
@@ -81,72 +39,55 @@ const SofSlider: React.FC<{
 }> = ({ status, onComplete, onUndo }) => {
     const trackRef = useRef<HTMLDivElement>(null);
     const thumbRef = useRef<HTMLDivElement>(null);
-    const isDraggingRef = useRef(false);
-    const startXRef = useRef(0);
-    const currentTranslateXRef = useRef(0);
+    const [isDragging, setIsDragging] = useState(false);
 
-    const getClientX = (e: MouseEvent | TouchEvent): number => {
-        if (e instanceof MouseEvent) {
-            return e.clientX;
-        }
-        if (window.TouchEvent && e instanceof TouchEvent) {
-            if (e.touches.length > 0) {
-                return e.touches[0].clientX;
-            }
-            if (e.changedTouches.length > 0) {
-                return e.changedTouches[0].clientY;
-            }
-        }
-        return 0;
-    };
-    
-    const handleDragMove = (e: MouseEvent | TouchEvent) => {
-        if (!isDraggingRef.current || !trackRef.current || !thumbRef.current) return;
-    
-        const currentX = getClientX(e);
-        const deltaX = currentX - startXRef.current;
-        
-        const trackWidth = trackRef.current.offsetWidth;
-        const thumbWidth = thumbRef.current.offsetWidth;
-        const maxTranslate = trackWidth - thumbWidth;
-    
-        let newTranslateX: number;
-        if (status === 'in-progress') {
-            newTranslateX = Math.max(0, Math.min(deltaX, maxTranslate));
-        } else { // 'complete'
-            newTranslateX = maxTranslate + Math.min(0, Math.max(deltaX, -maxTranslate));
-        }
-        
-        currentTranslateXRef.current = newTranslateX;
-        thumbRef.current.style.transform = `translateX(${newTranslateX}px)`;
-    };
-
-    const handleDragEnd = (e: MouseEvent | TouchEvent) => {
-        if (!isDraggingRef.current) return;
-        isDraggingRef.current = false;
-        
-        window.removeEventListener('mousemove', handleDragMove);
-        window.removeEventListener('mouseup', handleDragEnd);
-        window.removeEventListener('touchmove', handleDragMove);
-        window.removeEventListener('touchend', handleDragEnd);
-
+    const handlePointerDown = (e: React.PointerEvent) => {
         if (!thumbRef.current || !trackRef.current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+        thumbRef.current.setPointerCapture(e.pointerId);
+        thumbRef.current.style.transition = 'none';
+    };
 
-        thumbRef.current.style.transition = ''; 
-        
-        const trackWidth = trackRef.current.offsetWidth;
+    const handlePointerMove = (e: React.PointerEvent) => {
+        if (!isDragging || !trackRef.current || !thumbRef.current) return;
+        e.preventDefault();
+
+        const trackRect = trackRef.current.getBoundingClientRect();
         const thumbWidth = thumbRef.current.offsetWidth;
-        const maxTranslate = trackWidth - thumbWidth;
-        const triggerThreshold = maxTranslate * 0.7;
+        const maxTranslate = trackRect.width - thumbWidth;
+        
+        let newX = e.clientX - trackRect.left - (thumbWidth / 2);
+        newX = Math.max(0, Math.min(newX, maxTranslate));
+
+        thumbRef.current.style.transform = `translateX(${newX}px)`;
+    };
+
+    const handlePointerUp = (e: React.PointerEvent) => {
+        if (!isDragging || !trackRef.current || !thumbRef.current) return;
+        
+        setIsDragging(false);
+        thumbRef.current.releasePointerCapture(e.pointerId);
+        thumbRef.current.style.transition = 'transform 0.2s ease-out';
+
+        const trackRect = trackRef.current.getBoundingClientRect();
+        const thumbWidth = thumbRef.current.offsetWidth;
+        const maxTranslate = trackRect.width - thumbWidth;
+        
+        let currentX = e.clientX - trackRect.left - (thumbWidth / 2);
+        currentX = Math.max(0, Math.min(currentX, maxTranslate));
+
+        const threshold = maxTranslate * 0.7;
 
         if (status === 'in-progress') {
-            if (currentTranslateXRef.current > triggerThreshold) {
+            if (currentX > threshold) {
                 onComplete();
             } else {
-                thumbRef.current.style.transform = `translateX(0px)`;
+                thumbRef.current.style.transform = 'translateX(0px)';
             }
-        } else { // 'complete'
-            if (currentTranslateXRef.current < maxTranslate - triggerThreshold) {
+        } else {
+            if (currentX < maxTranslate - threshold) {
                 onUndo();
             } else {
                 thumbRef.current.style.transform = `translateX(${maxTranslate}px)`;
@@ -154,25 +95,6 @@ const SofSlider: React.FC<{
         }
     };
 
-    const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => {
-        if ('touches' in e.nativeEvent) {
-             e.preventDefault();
-        }
-        if (!thumbRef.current) return;
-        
-        isDraggingRef.current = true;
-        startXRef.current = getClientX(e.nativeEvent);
-        thumbRef.current.style.transition = 'none';
-        
-        if (e.nativeEvent instanceof MouseEvent) {
-            window.addEventListener('mousemove', handleDragMove);
-            window.addEventListener('mouseup', handleDragEnd);
-        } else if (window.TouchEvent && e.nativeEvent instanceof TouchEvent) {
-            window.addEventListener('touchmove', handleDragMove);
-            window.addEventListener('touchend', handleDragEnd);
-        }
-    };
-    
     useEffect(() => {
         if (thumbRef.current && trackRef.current) {
             const maxTranslate = trackRef.current.offsetWidth - thumbRef.current.offsetWidth;
@@ -180,27 +102,19 @@ const SofSlider: React.FC<{
         }
     }, [status]);
 
-    useEffect(() => {
-        return () => {
-            window.removeEventListener('mousemove', handleDragMove);
-            window.removeEventListener('mouseup', handleDragEnd);
-            window.removeEventListener('touchmove', handleDragMove);
-            window.removeEventListener('touchend', handleDragEnd);
-        };
-    }, []);
-
-
     return (
         <div
-            className="sof-slider-track"
+            className="sof-slider-track touch-none"
             ref={trackRef}
-            onMouseDown={handleDragStart}
-            onTouchStart={handleDragStart}
         >
             {status === 'complete' && <i className="fas fa-undo sof-slider-target-icon"></i>}
             <div
                 ref={thumbRef}
-                className="sof-slider-thumb"
+                className="sof-slider-thumb cursor-grab active:cursor-grabbing"
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
             >
                 <i className={`fas ${status === 'in-progress' ? 'fa-arrow-right' : 'fa-check'} sof-slider-icon`}></i>
             </div>
@@ -388,18 +302,275 @@ const TransferSidebarCard: React.FC<{ transfer: any, onClick: () => void, isSele
     );
 };
 
+const StatusBanner: React.FC<{ plan: Operation | null, processReworkTruck: (id: string) => void, openAcceptNoShowModal: (id: string) => void }> = ({ plan, processReworkTruck, openAcceptNoShowModal }) => {
+    if (!plan || (plan.currentStatus !== 'No Show' && plan.currentStatus !== 'Reschedule Required' && plan.currentStatus !== 'Reschedule Requested')) {
+        return null;
+    }
+
+    const isNoShow = plan.currentStatus === 'No Show';
+    const isRework = plan.requeueDetails?.reason?.startsWith('Rework:');
+    const isRequest = plan.currentStatus === 'Reschedule Requested';
+
+    let actionButton = null;
+    if (plan.modality === 'truck' && !isRequest) {
+        if (isRework) {
+            actionButton = (
+                <button
+                    onClick={() => processReworkTruck(plan.id)}
+                    className="btn-primary !bg-orange-500 hover:!bg-orange-600"
+                >
+                    Process Rework
+                </button>
+            );
+        } else {
+            actionButton = (
+                <button
+                    onClick={() => openAcceptNoShowModal(plan.id)}
+                    className="btn-primary"
+                >
+                    Process Arrival
+                </button>
+            );
+        }
+    }
+
+    const bgColor = isRework ? 'bg-orange-50' : isNoShow ? 'bg-red-50' : 'bg-yellow-50';
+    const borderColor = isRework ? 'border-orange-300' : isNoShow ? 'border-red-300' : 'border-yellow-300';
+    const textColor = isRework ? 'text-orange-800' : isNoShow ? 'text-red-800' : 'text-yellow-800';
+    const iconColor = isRework ? 'text-orange-500' : isNoShow ? 'text-red-500' : 'text-yellow-500';
+    const icon = isRequest ? 'fa-question-circle' : isRework ? 'fa-tools' : isNoShow ? 'fa-calendar-times' : 'fa-calendar-alt';
+    const title = isRequest ? 'Reschedule Requested by Operator' : isRework ? 'Rework Required' : isNoShow ? 'Truck is a No Show' : 'Reschedule Required';
+    const reason = plan.requeueDetails?.reason || 'No reason specified.';
+
+    return (
+        <div className={`p-4 flex items-center justify-between gap-4 rounded-lg border ${bgColor} ${borderColor}`}>
+            <div className="flex items-center gap-4">
+                <i className={`fas ${icon} ${iconColor} text-3xl`}></i>
+                <div>
+                    <h3 className={`font-bold ${textColor} text-xl`}>{title}</h3>
+                    <p className={`text-sm ${textColor.replace('800', '700')}`}>Reason: {reason}</p>
+                </div>
+            </div>
+            {actionButton}
+        </div>
+    );
+};
+
+const InvalidPlanWarning: React.FC<{ plan: Operation, validation: { isValid: boolean; issues: string[] }, switchView: (view: any, opId?: string) => void }> = ({ plan, validation, switchView }) => (
+    <div className="card p-6 bg-red-50 border-red-300 text-center">
+        <i className="fas fa-exclamation-triangle text-red-500 text-4xl mb-4"></i>
+        <h3 className="font-bold text-red-800 text-xl mb-2">Operation Plan is Incomplete or Unsafe</h3>
+        <p className="text-red-700 mb-4">The Statement of Facts and other operational controls are hidden until the following issues are resolved:</p>
+        <ul className="list-disc list-inside text-left max-w-md mx-auto mb-6 text-red-700 font-medium text-sm">
+            {validation.issues.map((issue, index) => <li key={index}>{issue}</li>)}
+        </ul>
+        <button onClick={() => switchView('operation-plan', plan.id)} className="btn-primary">
+            <i className="fas fa-edit mr-2"></i>Go to Plan Editor to Resolve
+        </button>
+    </div>
+);
+
+// --- NEW Checklist Item Component to prevent re-render issues ---
+const ChecklistItem: React.FC<{ label: string; checked: boolean; onChange: (checked: boolean) => void; }> = ({ label, checked, onChange }) => (
+    <label className="flex items-center space-x-3 p-3 rounded-md bg-white border cursor-pointer hover:bg-slate-50">
+        <input
+            type="checkbox"
+            className="h-5 w-5 rounded border-gray-300 text-brand-primary focus:ring-brand-primary"
+            checked={checked}
+            onChange={e => onChange(e.target.checked)}
+        />
+        <span className="font-medium">{label}</span>
+    </label>
+);
+
+const CHECKLIST_ITEMS = {
+    inspection: [
+        { key: 'tiresOk', label: 'Tires & Brakes Check' },
+        { key: 'leaksOk', label: 'No Visible Leaks' },
+        { key: 'hosesOk', label: 'Hoses & Fittings Secure' },
+        { key: 'safetySealsOk', label: 'Safety Seals Intact' },
+    ],
+    documentation: [
+        { key: 'bolReceived', label: 'Bill of Lading (BOL) Received' },
+        { key: 'coaReceived', label: 'Certificate of Analysis (COA) Received' },
+        { key: 'driverLicenseOk', label: "Driver's License & Credentials Verified" },
+    ]
+};
+
+const ArrivalChecklistContent: React.FC<{
+    plan: Operation;
+    setPlan: React.Dispatch<React.SetStateAction<Operation | null>>;
+    onDocumentUpdate: (op: Operation, details: { action: string; details: string }) => void;
+}> = ({ plan, setPlan, onDocumentUpdate }) => {
+    const { acceptTruckArrival, currentUser } = useContext(AppContext)!;
+    const canApprove = canApproveGate(currentUser);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const blobToBase64 = (blob: Blob): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    };
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file && plan) {
+            try {
+                const base64 = await blobToBase64(file);
+                setPlan(prev => {
+                    if (!prev) return null;
+                    const newChecklist = {
+                        ...(prev.arrivalChecklist || {
+                            tiresOk: 'pending', leaksOk: 'pending', hosesOk: 'pending', safetySealsOk: 'pending',
+                            bolReceived: 'pending', coaReceived: 'pending', driverLicenseOk: 'pending'
+                        }),
+                        arrivalPhoto: base64
+                    };
+                    return { ...prev, arrivalChecklist: newChecklist as ArrivalChecklist };
+                });
+            } catch (error) {
+                console.error("Error converting file to base64:", error);
+                alert("Could not process the selected file.");
+            }
+        }
+    };
+
+    const handleClearPhoto = () => {
+        setPlan(prev => {
+            if (!prev || !prev.arrivalChecklist) return prev;
+            const { arrivalPhoto, ...restOfChecklist } = prev.arrivalChecklist;
+            return { ...prev, arrivalChecklist: restOfChecklist };
+        });
+    };
+
+    const handleChecklistChange = (key: keyof ArrivalChecklist, isChecked: boolean) => {
+        if (!plan) return;
+        setPlan(prev => {
+            if (!prev) return null;
+            const newChecklist = {
+                ...(prev.arrivalChecklist || {
+                    tiresOk: 'pending', leaksOk: 'pending', hosesOk: 'pending', safetySealsOk: 'pending',
+                    bolReceived: 'pending', coaReceived: 'pending', driverLicenseOk: 'pending'
+                }),
+                [key]: isChecked ? 'complete' : 'pending'
+            };
+            return { ...prev, arrivalChecklist: newChecklist as ArrivalChecklist };
+        });
+    };
+
+    const checklist = plan.arrivalChecklist || {};
+    const allKeys: (keyof ArrivalChecklist)[] = [
+        ...CHECKLIST_ITEMS.inspection.map(i => i.key as keyof ArrivalChecklist),
+        ...CHECKLIST_ITEMS.documentation.map(i => i.key as keyof ArrivalChecklist)
+    ];
+    const isChecklistComplete = allKeys.every(key => checklist[key as keyof typeof checklist] === 'complete');
+
+    return (
+        <div className="space-y-6">
+            <div>
+                <h3 className="font-semibold text-lg text-text-primary mb-2">Industry Standards Inspection Checklist</h3>
+                <div className="space-y-2">
+                    {CHECKLIST_ITEMS.inspection.map(item => (
+                        <ChecklistItem
+                            key={item.key}
+                            label={item.label}
+                            checked={plan.arrivalChecklist?.[item.key as keyof ArrivalChecklist] === 'complete'}
+                            onChange={isChecked => handleChecklistChange(item.key as keyof ArrivalChecklist, isChecked)}
+                        />
+                    ))}
+                </div>
+            </div>
+            <div>
+                <h3 className="font-semibold text-lg text-text-primary mb-2">Documentation Required</h3>
+                <div className="space-y-2">
+                    {CHECKLIST_ITEMS.documentation.map(item => (
+                        <ChecklistItem
+                            key={item.key}
+                            label={item.label}
+                            checked={plan.arrivalChecklist?.[item.key as keyof ArrivalChecklist] === 'complete'}
+                            onChange={isChecked => handleChecklistChange(item.key as keyof ArrivalChecklist, isChecked)}
+                        />
+                    ))}
+                </div>
+            </div>
+            <div>
+                <h3 className="font-semibold text-lg text-text-primary mb-2">Arrival Photo (Optional)</h3>
+                {plan.arrivalChecklist?.arrivalPhoto ? (
+                    <div className="mt-2 space-y-2">
+                        <img src={plan.arrivalChecklist.arrivalPhoto} alt="Arrival evidence" className="max-h-60 w-auto rounded-lg border" />
+                        <button onClick={handleClearPhoto} className="btn-secondary">Clear Photo</button>
+                    </div>
+                ) : (
+                    <div className="mt-2 flex gap-2">
+                        <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
+                        <button onClick={() => fileInputRef.current?.click()} className="btn-secondary flex-1">
+                            <i className="fas fa-upload mr-2"></i>Upload Photo
+                        </button>
+                        <button
+                            className="btn-secondary flex-1 opacity-50 cursor-not-allowed"
+                            disabled
+                            title="Camera functionality is disabled for this demo."
+                        >
+                            <i className="fas fa-camera mr-2"></i>Take Photo
+                        </button>
+                    </div>
+                )}
+            </div>
+            <div className="pt-6 border-t">
+                <h3 className="font-semibold text-lg text-text-primary mb-2">Supporting Documents</h3>
+                <DocumentManager operation={plan} onUpdate={onDocumentUpdate} />
+            </div>
+            <div className="mt-6 pt-6 border-t">
+                <button
+                    onClick={() => acceptTruckArrival(plan.id)}
+                    disabled={!isChecklistComplete || !canApprove}
+                    className="btn-primary w-full disabled:opacity-50"
+                    title={!canApprove ? "Permission Denied" : !isChecklistComplete ? "Complete all checklist items to approve" : "Approve Truck Arrival"}
+                >
+                    <i className="fas fa-check-circle mr-2"></i>
+                    Approve Truck Arrival
+                </button>
+            </div>
+        </div>
+    );
+};
 
 const OperationDetails: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <div>Loading...</div>;
-
-    const { activeOpId, getOperationById, switchView, handleCompleteOperation, currentUser, scadaData, editingOp: plan, setEditingOp: setPlan, saveCurrentPlan, holds, settings, currentTerminalSettings, addActivityLog, revertCallOff, simulatedTime, openAcceptNoShowModal, requeueOperation, openRescheduleModal, processReworkTruck, updateOperationServiceStatus, updateTransferServiceStatus, acceptTruckArrival, openRequestRescheduleModal } = context;
     
+    // Safe defaults for hooks to execute unconditionally
+    const activeOpId = context?.activeOpId || null;
+    const getOperationById = context?.getOperationById || (() => undefined);
+    const switchView = context?.switchView || (() => {});
+    const handleCompleteOperation = context?.handleCompleteOperation || (() => {});
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' };
+    const scadaData = context?.scadaData || {};
+    const plan = context?.editingOp || null;
+    const setPlan = context?.setEditingOp || (() => {});
+    const saveCurrentPlan = context?.saveCurrentPlan || (() => {});
+    const holds = context?.holds || [];
+    const settings = context?.settings || { modalityServices: {} };
+    const currentTerminalSettings = context?.currentTerminalSettings || { masterTanks: {} };
+    const addActivityLog = context?.addActivityLog || (() => {});
+    const revertCallOff = context?.revertCallOff || (() => {});
+    const simulatedTime = context?.simulatedTime || new Date();
+    const openAcceptNoShowModal = context?.openAcceptNoShowModal || (() => {});
+    const requeueOperation = context?.requeueOperation || (() => {});
+    const openRescheduleModal = context?.openRescheduleModal || (() => {});
+    const processReworkTruck = context?.processReworkTruck || (() => {});
+    const updateOperationServiceStatus = context?.updateOperationServiceStatus || (() => {});
+    const updateTransferServiceStatus = context?.updateTransferServiceStatus || (() => {});
+    const acceptTruckArrival = context?.acceptTruckArrival || (() => {});
+    const openRequestRescheduleModal = context?.openRequestRescheduleModal || (() => {});
+
     const op = getOperationById(activeOpId);
     
     const [delayModalOpen, setDelayModalOpen] = useState(false);
     const [infoModal, setInfoModal] = useState<{ isOpen: boolean; title: string; message: string }>({ isOpen: false, title: '', message: '' });
-    const [activeTab, setActiveTab] = useState<'sof' | 'shippingLog' | 'documents' | 'services' | 'auditLog' | 'lineCleaning' | 'arrivalChecklist'>('sof');
+    const [activeTab, setActiveTab] = useState<'sof' | 'shippingLog' | 'documents' | 'auditLog' | 'lineCleaning' | 'arrivalChecklist' | 'services'>('sof');
     const [undoModalState, setUndoModalState] = useState<{ isOpen: boolean; item: SOFItem | null; context: 'vessel' | { lineIndex: number; transferIndex: number, type: 'commodity' | 'cleaning' } }>({ isOpen: false, item: null, context: 'vessel' });
     const [editingSof, setEditingSof] = useState<SOFItem | null>(null);
     const [isRejectionModalOpen, setIsRejectionModalOpen] = useState(false);
@@ -482,7 +653,7 @@ const OperationDetails: React.FC = () => {
         if (!plan) return false;
         
         if (plan.modality === 'vessel') {
-            const lastCommonStepName = VESSEL_COMMON_EVENTS[VESSEL_COMMON_EVENTS.length - 1];
+            const lastCommonStepName = 'CREW COMPLETED / SITE SECURE'; // Updated to match VESSEL_COMMON_EVENTS last step
             const isCommonSofComplete = (() => {
                 if (!plan.sof || plan.sof.length === 0) return false;
                 const maxLoop = Math.max(1, ...plan.sof.map(s => s.loop || 1));
@@ -490,7 +661,7 @@ const OperationDetails: React.FC = () => {
                 return finalStep?.status === 'complete';
             })();
     
-            const lastCommodityStepName = VESSEL_COMMODITY_EVENTS[VESSEL_COMMODITY_EVENTS.length - 1];
+            const lastCommodityStepName = 'PIG RECEIVED / COMMODITY COMPLETED'; // Updated to match VESSEL_COMMODITY_EVENTS
             const allCommoditiesComplete = (plan.transferPlan || []).every(line => 
                 line.transfers.every(transfer => {
                     if (!transfer.sof || transfer.sof.length === 0) return false;
@@ -542,60 +713,13 @@ const OperationDetails: React.FC = () => {
         return allLogs.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
     }, [plan]);
 
-    const StatusBanner: React.FC = () => {
-        if (!plan || (plan.currentStatus !== 'No Show' && plan.currentStatus !== 'Reschedule Required' && plan.currentStatus !== 'Reschedule Requested')) {
-            return null;
-        }
-    
-        const isNoShow = plan.currentStatus === 'No Show';
-        const isRework = plan.requeueDetails?.reason?.startsWith('Rework:');
-        const isRequest = plan.currentStatus === 'Reschedule Requested';
-    
-        let actionButton = null;
-        if (plan.modality === 'truck' && !isRequest) {
-            if (isRework) {
-                actionButton = (
-                    <button
-                        onClick={() => processReworkTruck(plan.id)}
-                        className="btn-primary !bg-orange-500 hover:!bg-orange-600"
-                    >
-                        Process Rework
-                    </button>
-                );
-            } else {
-                actionButton = (
-                    <button
-                        onClick={() => openAcceptNoShowModal(plan.id)}
-                        className="btn-primary"
-                    >
-                        Process Arrival
-                    </button>
-                );
-            }
-        }
-    
-        const bgColor = isRework ? 'bg-orange-50' : isNoShow ? 'bg-red-50' : 'bg-yellow-50';
-        const borderColor = isRework ? 'border-orange-300' : isNoShow ? 'border-red-300' : 'border-yellow-300';
-        const textColor = isRework ? 'text-orange-800' : isNoShow ? 'text-red-800' : 'text-yellow-800';
-        const iconColor = isRework ? 'text-orange-500' : isNoShow ? 'text-red-500' : 'text-yellow-500';
-        const icon = isRequest ? 'fa-question-circle' : isRework ? 'fa-tools' : isNoShow ? 'fa-calendar-times' : 'fa-calendar-alt';
-        const title = isRequest ? 'Reschedule Requested by Operator' : isRework ? 'Rework Required' : isNoShow ? 'Truck is a No Show' : 'Reschedule Required';
-        const reason = plan.requeueDetails?.reason || 'No reason specified.';
-    
-        return (
-            <div className={`p-4 flex items-center justify-between gap-4 rounded-lg border ${bgColor} ${borderColor}`}>
-                <div className="flex items-center gap-4">
-                    <i className={`fas ${icon} ${iconColor} text-3xl`}></i>
-                    <div>
-                        <h3 className={`font-bold ${textColor} text-xl`}>{title}</h3>
-                        <p className={`text-sm ${textColor.replace('800', '700')}`}>Reason: {reason}</p>
-                    </div>
-                </div>
-                {actionButton}
-            </div>
-        );
-    };
+    const isPumping = useMemo(() => {
+        if (!plan || plan.modality !== 'truck') return false;
+        return ['Loading', 'Pumping'].includes(plan.truckStatus || '');
+    }, [plan]);
 
+    // Only return early after ALL hooks have been called.
+    if (!context) return <div>Loading...</div>;
     if (!op || !plan) { return <div className="text-center p-8"><h2 className="text-xl font-semibold">No Operation Selected</h2></div>; }
     
     const handleAddComment = () => {
@@ -652,7 +776,8 @@ const OperationDetails: React.FC = () => {
         if (sofIndex > -1) newOp.sof![sofIndex] = sofItem; else newOp.sof = [...(newOp.sof || []), sofItem];
         newOp.activityHistory.push({ time: sofItem.time, user: currentUser.name, action: 'SOF_UPDATE', details: `${eventName} marked as complete.` });
         
-        const lastStepName = VESSEL_COMMON_EVENTS[VESSEL_COMMON_EVENTS.length-1];
+        // Check for completion based on last event. The string must match exactly from constants.
+        const lastStepName = 'CREW COMPLETED / SITE SECURE';
         if (eventName.endsWith(lastStepName) && (plan.transferPlan || []).every(line => line.transfers.every(t => (t.sof||[]).some(s => s.event.includes('COMMODITY COMPLETED') && s.status === 'complete')))) {
             handleCompleteOperation(newOp.id);
         } else {
@@ -758,11 +883,6 @@ const OperationDetails: React.FC = () => {
 
     const progress = calculateOperationProgress(op);
 
-    const isPumping = useMemo(() => {
-        if (!plan || plan.modality !== 'truck') return false;
-        return ['Loading', 'Pumping'].includes(plan.truckStatus || '');
-    }, [plan]);
-
     const handleRescheduleClick = () => {
         if (!plan) return;
     
@@ -775,6 +895,27 @@ const OperationDetails: React.FC = () => {
         }
     };
 
+    const handleServiceStatusChange = (serviceName: string, status: 'pending' | 'complete') => {
+        setPlan(prev => {
+            if (!prev) return null;
+            const newOp = JSON.parse(JSON.stringify(prev)) as Operation;
+            const existingIndex = (newOp.specialRequirements || []).findIndex((s: SpecialServiceData) => s.name === serviceName);
+            
+            if (existingIndex > -1) {
+                newOp.specialRequirements[existingIndex].data = { ...newOp.specialRequirements[existingIndex].data, status };
+            } else {
+                if (!newOp.specialRequirements) newOp.specialRequirements = [];
+                newOp.specialRequirements.push({ name: serviceName, data: { status } });
+            }
+            
+            const logAction = status === 'complete' ? 'SERVICE_COMPLETE' : 'SERVICE_RESET';
+            const logDetail = status === 'complete' ? `Service "${serviceName}" marked as complete.` : `Service "${serviceName}" reset to pending.`;
+            newOp.activityHistory.push({ time: simulatedTime.toISOString(), user: currentUser.name, action: logAction, details: logDetail });
+            
+            return newOp;
+        });
+    };
+
     const renderVesselContent = () => {
         const getActiveVesselSofEvent = (sofItems: SOFItem[]): string | null => {
             for (let i = 0; i < sofItems.length; i++) {
@@ -782,6 +923,7 @@ const OperationDetails: React.FC = () => {
                 if (item.status === 'pending') {
                     if (!isPreviousStepComplete(sofItems, i)) return null;
                     const baseEventName = item.event.replace(/^(Rework #\d+: )/, '');
+                    // Check for hardcoded last event dependency
                     if (baseEventName === 'LAST HOSE DISCONNECTED' && !(plan.transferPlan || []).every(line => line.transfers.every(t => (t.sof||[]).some(s => s.event.includes('COMMODITY COMPLETED') && s.status === 'complete')))) return null;
                     return item.event;
                 }
@@ -868,20 +1010,6 @@ const OperationDetails: React.FC = () => {
             setInfoModal({ isOpen: true, title: 'Step Unavailable', message: `Please complete the previous step first: "${items[index-1].event}"`});
         }
     };
-
-    const InvalidPlanWarning = () => (
-        <div className="card p-6 bg-red-50 border-red-300 text-center">
-            <i className="fas fa-exclamation-triangle text-red-500 text-4xl mb-4"></i>
-            <h3 className="font-bold text-red-800 text-xl mb-2">Operation Plan is Incomplete or Unsafe</h3>
-            <p className="text-red-700 mb-4">The Statement of Facts and other operational controls are hidden until the following issues are resolved:</p>
-            <ul className="list-disc list-inside text-left max-w-md mx-auto mb-6 text-red-700 font-medium text-sm">
-                {validation.issues.map((issue, index) => <li key={index}>{issue}</li>)}
-            </ul>
-            <button onClick={() => switchView('operation-plan', plan.id)} className="btn-primary">
-                <i className="fas fa-edit mr-2"></i>Go to Plan Editor to Resolve
-            </button>
-        </div>
-    );
     
     const canUserReschedule = canReschedule(currentUser);
     const canUserRequest = canRequestReschedule(currentUser);
@@ -1029,8 +1157,8 @@ const OperationDetails: React.FC = () => {
             
             <div className="px-3 sm:px-4 pb-4">
                 <div className="space-y-4">
-                    <StatusBanner />
-                    {!validation.isValid ? <InvalidPlanWarning /> : (
+                    <StatusBanner plan={plan} processReworkTruck={processReworkTruck} openAcceptNoShowModal={openAcceptNoShowModal} />
+                    {!validation.isValid ? <InvalidPlanWarning plan={plan} validation={validation} switchView={switchView} /> : (
                         op.modality === 'vessel' ? (
                             <div className="grid grid-cols-3 gap-6">
                                 <main className="col-span-2">
@@ -1038,7 +1166,8 @@ const OperationDetails: React.FC = () => {
                                         <ProductTransferDetails 
                                             lineIndex={viewingTransferIndices.lineIndex} 
                                             transferIndex={viewingTransferIndices.transferIndex} 
-                                            setActiveTab={setActiveTab}
+                                            setActiveTab={setActiveTab as any}
+                                            activeTab={activeTab}
                                         />
                                     ) : (
                                         <div className="card">
@@ -1047,44 +1176,21 @@ const OperationDetails: React.FC = () => {
                                                 {activeTab === 'sof' && renderVesselContent()}
                                                 {activeTab === 'lineCleaning' && renderLineCleaningContent()}
                                                 {activeTab === 'services' && (
-                                                    <div className="space-y-6">
-                                                        { (plan.specialRequirements || []).length > 0 && (
-                                                            <div>
-                                                                <h4 className="font-semibold text-lg mb-2">Vessel-Level Services</h4>
-                                                                <div className="space-y-2">
-                                                                    {(plan.specialRequirements || []).map(service => (
-                                                                        <ServiceItem
-                                                                            key={service.name}
-                                                                            service={service}
-                                                                            context="Vessel-wide requirement"
-                                                                            onStatusChange={(status) => updateOperationServiceStatus(plan.id, service.name, status)}
-                                                                        />
-                                                                    ))}
-                                                                </div>
-                                                            </div>
-                                                        )}
-                                                        {(plan.transferPlan || []).map((line, lineIndex) => 
-                                                            line.transfers.map((transfer, transferIndex) => (
-                                                                (transfer.specialServices || []).length > 0 && (
-                                                                    <div key={transfer.id || `${lineIndex}-${transferIndex}`}>
-                                                                        <h4 className="font-semibold text-lg mb-2">Services for {transfer.product} on {formatInfraName(line.infrastructureId)}</h4>
-                                                                        <div className="space-y-2">
-                                                                            {(transfer.specialServices || []).map(service => (
-                                                                                <ServiceItem
-                                                                                    key={service.name}
-                                                                                    service={service}
-                                                                                    context={`Transfer-specific service`}
-                                                                                    onStatusChange={(status) => updateTransferServiceStatus(plan.id, transfer.id!, service.name, status)}
-                                                                                />
-                                                                            ))}
-                                                                        </div>
-                                                                    </div>
-                                                                )
-                                                            ))
-                                                        )}
-                                                        {[...(plan.specialRequirements || []), ...(plan.transferPlan || []).flatMap(l => l.transfers.flatMap(t => t.specialServices || []))].length === 0 && (
-                                                            <p className="text-sm text-center text-slate-500 italic p-4">No special services for this operation.</p>
-                                                        )}
+                                                    <div className="space-y-2">
+                                                        {(settings.modalityServices?.[op.modality] || []).map(serviceName => {
+                                                            // Get service object from plan if it exists, or create dummy for display
+                                                            const existing = plan.specialRequirements?.find(s => s.name === serviceName);
+                                                            const serviceObj = existing || { name: serviceName, data: { status: 'pending' } };
+                                                            
+                                                            return (
+                                                                <ServiceSlider 
+                                                                    key={serviceName}
+                                                                    service={serviceObj}
+                                                                    context="Standard Service"
+                                                                    onStatusChange={(status) => handleServiceStatusChange(serviceName, status)}
+                                                                />
+                                                            );
+                                                        })}
                                                     </div>
                                                 )}
                                                 {activeTab === 'shippingLog' && <ShippingLog plan={plan} setPlan={setPlan} />}
@@ -1159,22 +1265,24 @@ const OperationDetails: React.FC = () => {
                                     </nav>
                                 </div>
                                 <div className="p-6">
-                                    {activeTab === 'sof' && <ProductTransferDetails lineIndex={0} transferIndex={0} setActiveTab={setActiveTab} />}
+                                    {activeTab === 'sof' && <ProductTransferDetails lineIndex={0} transferIndex={0} setActiveTab={setActiveTab as any} activeTab='sof' />}
                                     {activeTab === 'arrivalChecklist' && <ArrivalChecklistContent plan={plan} setPlan={setPlan} onDocumentUpdate={handleDocumentUpdate} />}
                                     {activeTab === 'services' && (
-                                        <div className="space-y-4">
-                                            {(plan.transferPlan.flatMap(l => l.transfers).flatMap(t => t.specialServices || [])).length > 0 ? (
-                                                (plan.transferPlan.flatMap(l => l.transfers).flatMap(t => t.specialServices || [])).map(service => (
-                                                    <ServiceItem
-                                                        key={service.name}
-                                                        service={service}
-                                                        context="Operation service"
-                                                        onStatusChange={(status) => updateTransferServiceStatus(plan.id, plan.transferPlan[0].transfers[0].id!, service.name, status)}
+                                        <div className="space-y-2">
+                                            {(settings.modalityServices?.[op.modality] || []).map(serviceName => {
+                                                // Get service object from plan if it exists, or create dummy for display
+                                                const existing = plan.specialRequirements?.find(s => s.name === serviceName);
+                                                const serviceObj = existing || { name: serviceName, data: { status: 'pending' } };
+                                                
+                                                return (
+                                                    <ServiceSlider 
+                                                        key={serviceName}
+                                                        service={serviceObj}
+                                                        context="Standard Service"
+                                                        onStatusChange={(status) => handleServiceStatusChange(serviceName, status)}
                                                     />
-                                                ))
-                                            ) : (
-                                                <p className="text-sm text-center text-slate-500 italic p-4">No special services for this operation.</p>
-                                            )}
+                                                );
+                                            })}
                                         </div>
                                     )}
                                     {activeTab === 'documents' && (<DocumentManager operation={plan} onUpdate={handleDocumentUpdate as any} />)}
@@ -1217,111 +1325,6 @@ const OperationDetails: React.FC = () => {
                 </div>
             </div>
         </>
-    );
-};
-
-const CHECKLIST_ITEMS = {
-    inspection: [
-        { key: 'tiresOk', label: 'Tires & Brakes Check' },
-        { key: 'leaksOk', label: 'No Visible Leaks' },
-        { key: 'hosesOk', label: 'Hoses & Fittings Secure' },
-        { key: 'safetySealsOk', label: 'Safety Seals Intact' },
-    ],
-    documentation: [
-        { key: 'bolReceived', label: 'Bill of Lading (BOL) Received' },
-        { key: 'coaReceived', label: 'Certificate of Analysis (COA) Received' },
-        { key: 'driverLicenseOk', label: "Driver's License & Credentials Verified" },
-    ]
-};
-
-const ArrivalChecklistContent: React.FC<{
-    plan: Operation;
-    setPlan: React.Dispatch<React.SetStateAction<Operation | null>>;
-    onDocumentUpdate: (op: Operation, details: { action: string; details: string }) => void;
-}> = ({ plan, setPlan, onDocumentUpdate }) => {
-    
-    const { acceptTruckArrival, currentUser } = useContext(AppContext)!;
-    const canApprove = canApproveGate(currentUser);
-
-    const handleChecklistChange = (key: keyof ArrivalChecklist, isChecked: boolean) => {
-        if (!plan) return;
-        setPlan(prev => {
-            if (!prev) return null;
-            const newChecklist = {
-                ...(prev.arrivalChecklist || {
-                    tiresOk: 'pending', leaksOk: 'pending', hosesOk: 'pending', safetySealsOk: 'pending',
-                    bolReceived: 'pending', coaReceived: 'pending', driverLicenseOk: 'pending'
-                }),
-                [key]: isChecked ? 'complete' : 'pending'
-            };
-            return { ...prev, arrivalChecklist: newChecklist };
-        });
-    };
-
-    const checklist = plan.arrivalChecklist || {};
-    const allKeys: (keyof ArrivalChecklist)[] = [
-        ...CHECKLIST_ITEMS.inspection.map(i => i.key as keyof ArrivalChecklist),
-        ...CHECKLIST_ITEMS.documentation.map(i => i.key as keyof ArrivalChecklist)
-    ];
-    const isChecklistComplete = allKeys.every(key => checklist[key] === 'complete');
-
-
-    const ChecklistItem: React.FC<{ label: string; checked: boolean; onChange: (checked: boolean) => void; }> = ({ label, checked, onChange }) => (
-        <label className="flex items-center space-x-3 p-3 rounded-md bg-white border cursor-pointer hover:bg-slate-50">
-            <input
-                type="checkbox"
-                className="h-5 w-5 rounded border-gray-300 text-brand-primary focus:ring-brand-primary"
-                checked={checked}
-                onChange={e => onChange(e.target.checked)}
-            />
-            <span className="font-medium">{label}</span>
-        </label>
-    );
-
-    return (
-        <div className="space-y-6">
-            <div>
-                <h3 className="font-semibold text-lg text-text-primary mb-2">Industry Standards Inspection Checklist</h3>
-                <div className="space-y-2">
-                    {CHECKLIST_ITEMS.inspection.map(item => (
-                        <ChecklistItem
-                            key={item.key}
-                            label={item.label}
-                            checked={plan.arrivalChecklist?.[item.key as keyof ArrivalChecklist] === 'complete'}
-                            onChange={isChecked => handleChecklistChange(item.key as keyof ArrivalChecklist, isChecked)}
-                        />
-                    ))}
-                </div>
-            </div>
-            <div>
-                <h3 className="font-semibold text-lg text-text-primary mb-2">Documentation Required</h3>
-                <div className="space-y-2">
-                    {CHECKLIST_ITEMS.documentation.map(item => (
-                        <ChecklistItem
-                            key={item.key}
-                            label={item.label}
-                            checked={plan.arrivalChecklist?.[item.key as keyof ArrivalChecklist] === 'complete'}
-                            onChange={isChecked => handleChecklistChange(item.key as keyof ArrivalChecklist, isChecked)}
-                        />
-                    ))}
-                </div>
-            </div>
-            <div className="pt-6 border-t">
-                <h3 className="font-semibold text-lg text-text-primary mb-2">Supporting Documents</h3>
-                <DocumentManager operation={plan} onUpdate={onDocumentUpdate} />
-            </div>
-            <div className="mt-6 pt-6 border-t">
-                <button
-                    onClick={() => acceptTruckArrival(plan.id)}
-                    disabled={!isChecklistComplete || !canApprove}
-                    className="btn-primary w-full disabled:opacity-50"
-                    title={!canApprove ? "Permission Denied" : !isChecklistComplete ? "Complete all checklist items to approve" : "Approve Truck Arrival"}
-                >
-                    <i className="fas fa-check-circle mr-2"></i>
-                    Approve Truck Arrival
-                </button>
-            </div>
-        </div>
     );
 };
 

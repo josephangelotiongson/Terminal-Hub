@@ -1,4 +1,5 @@
-import { AppSettings, Modality, TerminalSettings, ContractRates } from '../types';
+
+import { AppSettings, Modality, TerminalSettings, ContractRates, LineSegment, Lineup } from '../types';
 
 // ===================================================================================
 //  EXPANDED MASTER DATA
@@ -22,7 +23,6 @@ export const PRODUCT_GROUPS: { [product: string]: string } = {
     'Glyco-Coolant B': 'Chemical', 'Formic Solution 85': 'Chemical', 'Methanol': 'Chemical'
 };
 
-// FIX: Renamed VESSEL_REQUIREMENTS to VESSEL_SERVICES to match AppSettings type
 export const VESSEL_SERVICES: string[] = [
     'Aquis Quarantine',
     'Customs arrival',
@@ -32,7 +32,6 @@ export const VESSEL_SERVICES: string[] = [
     'Trucks during vessel'
 ].sort();
 
-// FIX: Replaced TRANSFER_SERVICES with correctly structured MODALITY_SERVICES and PRODUCT_SERVICES
 export const MODALITY_SERVICES: { [key in Modality]: string[] } = {
     vessel: [
         'Change of products', 'Different batches', 'Emptying tanks', 
@@ -58,7 +57,6 @@ export const PRODUCT_SERVICES: string[] = [
 
 export const CONTRACT_RATES: ContractRates = {
     serviceRates: {
-        // Vessel-level Services
         "Aquis Quarantine": 750.00,
         "Customs arrival": 300.00,
         "Marpol surveyor": 800.00,
@@ -66,31 +64,27 @@ export const CONTRACT_RATES: ContractRates = {
         "Ship stability/positioning": 1000.00,
         "Trucks during vessel": 75.00,
 
-        // Vessel Transfer Services
-        "Change of products": 200.00, // ADDED
+        "Change of products": 200.00, 
         "Different batches": 100.00,
-        "Emptying tanks": 450.00, // ADDED
+        "Emptying tanks": 450.00, 
         "Heating tanks": 500.00,
         "Line Purge Volume Log": 300.00,
         "Slopping requirements": 400.00,
         "Stop dips on tanks": 50.00,
-        "Tanks priority": 150.00, // KEY RENAMED
+        "Tanks priority": 150.00,
         "Vessel tank inerting": 650.00,
         "Water dilution": 200.00,
 
-        // Truck Services
         "Driver Assist Loading": 40.00,
         "Nitrogen Purge": 120.00,
         "Specialized Hose Required": 90.00,
         "Weight Ticket Required": 25.00,
 
-        // Rail Services
         "In-line Blending": 600.00,
         "Railcar Heating": 350.00,
         "Shunting Required": 500.00,
         "Multi-car loading": 450.00,
 
-        // General Product Services
         "Detailed Sample Logging": 250.00,
         "In-line Additive Injection": 180.00,
         "Temperature Control": 220.00,
@@ -118,6 +112,170 @@ export const CONTRACT_RATES: ContractRates = {
 const rand = (min: number, max: number, decimals: number = 2) => parseFloat((Math.random() * (max - min) + min).toFixed(decimals));
 const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
+// --- NEW Mock Data for Lineups ---
+// Segregated headers to prevent product contamination
+const PAL_INTERMEDIATES = [
+    'Main Header North', 'Main Header South', 'Main Header Central', 
+    'Truck Header North', 'Truck Header South', 'Truck Header Central',
+    'Rail Manifold'
+];
+
+const createSegment = (source: string, target: string, name?: string): LineSegment => ({
+    id: `seg-${source.replace(/\s+/g,'')}-${target.replace(/\s+/g,'')}`,
+    name: name || `${source} -> ${target}`,
+    sourceId: source,
+    targetId: target,
+    lengthMeters: rand(50, 500, 0),
+    volumeBarrels: rand(10, 100, 0),
+    diameterInches: 12,
+    status: 'active'
+});
+
+const PAL_SEGMENTS: LineSegment[] = [
+    // --- WHARF CONNECTIONS (Inbound to Terminal) ---
+    // Wharf 1 (Clean/White Oils) -> Main Header North
+    createSegment('Wharf 1', 'Main Header North', 'W1 Intake'),
+    // Wharf 2 (Black/Chemicals) -> Main Header South
+    createSegment('Wharf 2', 'Main Header South', 'W2 Intake'),
+    // Wharf 3 (Specialty) -> Main Header Central
+    createSegment('Wharf 3', 'Main Header Central', 'W3 Intake'),
+
+    // --- HEADER TO TANKS (Fill Lines - Right Side of Tank) ---
+    // North (Clean) -> Fuel Farm A & B & Aviation
+    createSegment('Main Header North', 'A01'),
+    createSegment('Main Header North', 'A02'),
+    createSegment('Main Header North', 'B45'),
+    createSegment('Main Header North', 'B46'),
+    createSegment('Main Header North', 'B47'),
+    createSegment('Main Header North', 'J10'),
+    createSegment('Main Header North', 'J11'),
+
+    // South (Dirty/Chem) -> Block C & D
+    createSegment('Main Header South', 'D05'),
+    createSegment('Main Header South', 'C13'),
+    createSegment('Main Header South', 'C38'),
+
+    // Central (Specialty) -> Block E
+    createSegment('Main Header Central', 'E14'),
+    createSegment('Main Header Central', 'E15'),
+    // Central Cross-over to A01 (Flexibility)
+    createSegment('Main Header Central', 'A01'), 
+
+    // --- TANK TO TRUCK HEADERS (Suction Lines - Left Side of Tank) ---
+    // Fuel Farm A/B/J -> Truck Header North
+    createSegment('A01', 'Truck Header North'),
+    createSegment('A02', 'Truck Header North'),
+    createSegment('B45', 'Truck Header North'),
+    createSegment('B46', 'Truck Header North'),
+    createSegment('B47', 'Truck Header North'),
+    createSegment('J10', 'Truck Header North'),
+    createSegment('J11', 'Truck Header North'),
+
+    // Block C/D -> Truck Header South
+    createSegment('D05', 'Truck Header South'),
+    createSegment('C13', 'Truck Header South'),
+    createSegment('C38', 'Truck Header South'),
+
+    // Block E -> Truck Header Central
+    createSegment('E14', 'Truck Header Central'),
+    createSegment('E15', 'Truck Header Central'),
+
+    // --- TRUCK HEADER TO BAYS (Distribution) ---
+    // North Header -> Bays 1-4 (Clean Bays)
+    createSegment('Truck Header North', 'Bay 1'),
+    createSegment('Truck Header North', 'Bay 2'),
+    createSegment('Truck Header North', 'Bay 3'),
+    createSegment('Truck Header North', 'Bay 4'),
+    
+    // South Header -> Bays 5-8 (Dirty/Chem Bays)
+    createSegment('Truck Header South', 'Bay 5'),
+    createSegment('Truck Header South', 'Bay 6'),
+    createSegment('Truck Header South', 'Bay 7'),
+    createSegment('Truck Header South', 'Bay 8'),
+
+    // Central Header -> Bays 9-10 (Specialty)
+    createSegment('Truck Header Central', 'Bay 9'),
+    createSegment('Truck Header Central', 'Bay 10'),
+
+    // --- RAIL CONNECTIONS ---
+    // Inbound from Rail
+    createSegment('Siding A', 'Rail Manifold'),
+    createSegment('Siding B', 'Rail Manifold'),
+    createSegment('Rail Manifold', 'Main Header North'), // Feed into system
+
+    // Outbound to Rail (from Headers)
+    createSegment('Truck Header South', 'Rail Manifold'), // Load from tanks via header
+    createSegment('Rail Manifold', 'Siding A'),
+    createSegment('Rail Manifold', 'Siding B'),
+];
+
+// Generate Lineups for known connections to enable highlighting
+const PAL_LINEUPS: Lineup[] = [];
+
+const generateLineup = (source: string, target: string, segments: LineSegment[], name?: string) => {
+    PAL_LINEUPS.push({
+        id: `lineup-${source.replace(/\s+/g,'')}-${target.replace(/\s+/g,'')}`,
+        name: name || `${source} -> ${target}`,
+        sourceId: source,
+        destinationId: target,
+        segmentIds: segments.map(s => s.id),
+        valid: true
+    });
+};
+
+// --- AUTO-GENERATE LINEUPS BASED ON TOPOLOGY ---
+// 1. Vessel Inbound: Wharf -> Main Header -> Tank
+// 2. Truck Outbound: Tank -> Truck Header -> Bay
+
+const TANK_GROUPS: Record<string, string[]> = {
+    North: ['A01', 'A02', 'B45', 'B46', 'B47', 'J10', 'J11'],
+    South: ['D05', 'C13', 'C38'],
+    Central: ['E14', 'E15']
+};
+
+const BAY_GROUPS: Record<string, string[]> = {
+    North: ['Bay 1', 'Bay 2', 'Bay 3', 'Bay 4'],
+    South: ['Bay 5', 'Bay 6', 'Bay 7', 'Bay 8'],
+    Central: ['Bay 9', 'Bay 10']
+};
+
+// Generate Inbound (Vessel -> Tank)
+TANK_GROUPS.North.forEach(tank => {
+    const s1 = PAL_SEGMENTS.find(s => s.sourceId === 'Wharf 1' && s.targetId === 'Main Header North');
+    const s2 = PAL_SEGMENTS.find(s => s.sourceId === 'Main Header North' && s.targetId === tank);
+    if (s1 && s2) generateLineup('Wharf 1', tank, [s1, s2]);
+});
+TANK_GROUPS.South.forEach(tank => {
+    const s1 = PAL_SEGMENTS.find(s => s.sourceId === 'Wharf 2' && s.targetId === 'Main Header South');
+    const s2 = PAL_SEGMENTS.find(s => s.sourceId === 'Main Header South' && s.targetId === tank);
+    if (s1 && s2) generateLineup('Wharf 2', tank, [s1, s2]);
+});
+TANK_GROUPS.Central.forEach(tank => {
+    const s1 = PAL_SEGMENTS.find(s => s.sourceId === 'Wharf 3' && s.targetId === 'Main Header Central');
+    const s2 = PAL_SEGMENTS.find(s => s.sourceId === 'Main Header Central' && s.targetId === tank);
+    if (s1 && s2) generateLineup('Wharf 3', tank, [s1, s2]);
+});
+
+// Generate Outbound (Tank -> Truck)
+Object.keys(TANK_GROUPS).forEach(group => {
+    const tanks = TANK_GROUPS[group];
+    const bays = BAY_GROUPS[group];
+    const header = `Truck Header ${group}`;
+    
+    tanks.forEach(tank => {
+        bays.forEach(bay => {
+            const s1 = PAL_SEGMENTS.find(s => s.sourceId === tank && s.targetId === header);
+            const s2 = PAL_SEGMENTS.find(s => s.sourceId === header && s.targetId === bay);
+            
+            if (s1 && s2) {
+                // Tank -> Bay (Loading)
+                generateLineup(tank, bay, [s1, s2]);
+            }
+        });
+    });
+});
+
+
 export const TERMINAL_MASTER_DATA: { [key: string]: Partial<TerminalSettings> } = {
     PAL: {
         customerMatrix: [
@@ -144,8 +302,9 @@ export const TERMINAL_MASTER_DATA: { [key: string]: Partial<TerminalSettings> } 
             'L12': ['A01', 'B45', 'B46'], 'L13': ['A02', 'B47'], 'L14': ['B47', 'J10', 'J11'], 'L23': ['C13', 'C38', 'D05'],
             'L15': ['A01', 'A02'], 'L16': ['B45', 'B46', 'B47'], 'L24': ['C13', 'C38'], 'L25': ['D05', 'J10', 'J11'],
             'L31': ['A01', 'A02', 'J10'], 'L32': ['B45', 'B46', 'B47'], 'L33': ['C13', 'C38'], 'L34': ['D05', 'E14', 'E15'],
-            'Bay 1': ['C13', 'C38', 'E14', 'E15'], 'Bay 2': ['C13', 'C38', 'B47'], 'Bay 3': ['A01', 'E14', 'E15'], 'Bay 4': ['A01', 'A02', 'J10', 'J11'],
-            'Bay 5': ['C13', 'C38'], 'Bay 6': ['A01', 'A02'], 'Bay 7': ['E14', 'E15'], 'Bay 8': ['B47', 'J10'], 'Bay 9': ['A01', 'C13'], 'Bay 10': ['A02', 'C38'],
+            'Bay 1': ['A01', 'A02', 'B45', 'B46'], 'Bay 2': ['A01', 'A02', 'B47'], 'Bay 3': ['B45', 'B46', 'J10'], 'Bay 4': ['J10', 'J11', 'A01'], // Clean Bays (North)
+            'Bay 5': ['C13', 'C38', 'D05'], 'Bay 6': ['C13', 'C38', 'D05'], 'Bay 7': ['C13', 'C38'], 'Bay 8': ['C13'], // Dirty/Chem (South)
+            'Bay 9': ['E14', 'E15'], 'Bay 10': ['E14', 'E15'], // Specialty (Central)
             'Siding A': ['B45', 'B46', 'D05'], 'Siding B': ['C13', 'C38']
         },
         infrastructureModalityMapping: {
@@ -157,21 +316,24 @@ export const TERMINAL_MASTER_DATA: { [key: string]: Partial<TerminalSettings> } 
         assetHolds: { },
         tankHolds: { },
         masterTanks: {
-            'A01': { capacity: 15000, current: 8000, customer: 'Apex Refining', product: 'ULP 98', lastUpdated: daysAgo(2), measurements: { temperature: rand(75,85), level: rand(30,40), waterCut: rand(5,7), flowRate: 0, pressure: rand(1, 5) } }, 
-            'A02': { capacity: 15000, current: 2500, customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', lastUpdated: daysAgo(3), measurements: { temperature: rand(80,90), level: rand(10,15), waterCut: rand(4,6), flowRate: 0, pressure: rand(1, 5) } },
-            'B45': { capacity: 20000, current: 11000, customer: 'Apex Refining', product: 'Petro-Fuel 95', lastUpdated: daysAgo(1), measurements: { temperature: rand(72,82), level: rand(35,45), waterCut: rand(6,8), flowRate: 0, pressure: rand(1, 5) } }, 
-            'B46': { capacity: 20000, current: 18500, customer: 'Apex Refining', product: 'Petro-Fuel 95', lastUpdated: daysAgo(5), measurements: { temperature: rand(74,84), level: rand(55,65), waterCut: rand(5,7), flowRate: 0, pressure: rand(1, 5) } }, 
-            'B47': { capacity: 10000, current: 1000, customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', lastUpdated: daysAgo(4), measurements: { temperature: rand(90,100), level: rand(5,10), waterCut: rand(8,10), flowRate: 0, pressure: rand(1, 5) } },
-            'C13': { capacity: 25000, current: 22000, customer: 'Coastal Energy Supply', product: 'Diesel Max', lastUpdated: daysAgo(2), measurements: { temperature: rand(65,75), level: rand(50,60), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } }, 
-            'C38': { capacity: 25000, current: 5000, customer: 'National Rail Freight', product: 'Diesel Max', lastUpdated: daysAgo(6), measurements: { temperature: rand(68,78), level: rand(10,15), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } },
-            'D05': { capacity: 50000, current: 35000, customer: 'Coastal Energy Supply', product: 'Crude Oil', lastUpdated: daysAgo(10), measurements: { temperature: rand(110,120), level: rand(45,55), waterCut: rand(10,15), flowRate: 0, pressure: rand(1, 5) } },
-            'E14': { capacity: 5000, current: 1500, customer: 'GlobalChem Industries', product: 'Indu-Chem X7', lastUpdated: daysAgo(7), measurements: { temperature: rand(88,98), level: rand(15,20), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } }, 
-            'E15': { capacity: 5000, current: 1200, customer: 'GlobalChem Industries', product: 'Methanol', lastUpdated: daysAgo(8), measurements: { temperature: rand(85,95), level: rand(12,18), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } },
-            'J10': { capacity: 12000, current: 9000, customer: 'Aviation Fuels Inc', product: 'Jet A-1', lastUpdated: daysAgo(1), measurements: { temperature: rand(60,70), level: rand(40,50), waterCut: rand(2,4), flowRate: 0, pressure: rand(1, 5) } }, 
-            'J11': { capacity: 12000, current: 4000, customer: 'Aviation Fuels Inc', product: 'Jet A-1', lastUpdated: daysAgo(9), measurements: { temperature: rand(62,72), level: rand(15,25), waterCut: rand(2,4), flowRate: 0, pressure: rand(1, 5) } }
+            'A01': { group: 'Fuel Farm A', productCompatibilityGroup: 'Hydrocarbon', capacity: 15000, current: 8000, customer: 'Apex Refining', product: 'ULP 98', lastUpdated: daysAgo(2), measurements: { temperature: rand(75,85), level: rand(30,40), waterCut: rand(5,7), flowRate: 0, pressure: rand(1, 5) } }, 
+            'A02': { group: 'Fuel Farm A', productCompatibilityGroup: 'Biofuel', capacity: 15000, current: 2500, customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', lastUpdated: daysAgo(3), measurements: { temperature: rand(80,90), level: rand(10,15), waterCut: rand(4,6), flowRate: 0, pressure: rand(1, 5) } },
+            'B45': { group: 'Fuel Farm B', productCompatibilityGroup: 'Hydrocarbon', capacity: 20000, current: 11000, customer: 'Apex Refining', product: 'Petro-Fuel 95', lastUpdated: daysAgo(1), measurements: { temperature: rand(72,82), level: rand(35,45), waterCut: rand(6,8), flowRate: 0, pressure: rand(1, 5) } }, 
+            'B46': { group: 'Fuel Farm B', productCompatibilityGroup: 'Hydrocarbon', capacity: 20000, current: 4000, customer: 'Apex Refining', product: 'Petro-Fuel 95', lastUpdated: daysAgo(5), measurements: { temperature: rand(74,84), level: rand(55,65), waterCut: rand(5,7), flowRate: 0, pressure: rand(1, 5) } }, 
+            'B47': { group: 'Fuel Farm B', productCompatibilityGroup: 'Edible Oil', capacity: 10000, current: 1000, customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', lastUpdated: daysAgo(4), measurements: { temperature: rand(90,100), level: rand(5,10), waterCut: rand(8,10), flowRate: 0, pressure: rand(1, 5) } },
+            'C13': { group: 'Chemical Block C', productCompatibilityGroup: 'Hydrocarbon', capacity: 25000, current: 15000, customer: 'Coastal Energy Supply', product: 'Diesel Max', lastUpdated: daysAgo(2), measurements: { temperature: rand(65,75), level: rand(50,60), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } }, 
+            'C38': { group: 'Chemical Block C', productCompatibilityGroup: 'Hydrocarbon', capacity: 25000, current: 5000, customer: 'National Rail Freight', product: 'Diesel Max', lastUpdated: daysAgo(6), measurements: { temperature: rand(68,78), level: rand(10,15), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } },
+            'D05': { group: 'Heavy Oil D', productCompatibilityGroup: 'Hydrocarbon', capacity: 50000, current: 35000, customer: 'Coastal Energy Supply', product: 'Crude Oil', lastUpdated: daysAgo(10), measurements: { temperature: rand(110,120), level: rand(45,55), waterCut: rand(10,15), flowRate: 0, pressure: rand(1, 5) } },
+            'E14': { group: 'Specialty Block E', productCompatibilityGroup: 'Caustic', capacity: 5000, current: 1500, customer: 'GlobalChem Industries', product: 'Indu-Chem X7', lastUpdated: daysAgo(7), measurements: { temperature: rand(88,98), level: rand(15,20), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } }, 
+            'E15': { group: 'Specialty Block E', productCompatibilityGroup: 'Chemical', capacity: 5000, current: 1200, customer: 'GlobalChem Industries', product: 'Methanol', lastUpdated: daysAgo(8), measurements: { temperature: rand(85,95), level: rand(12,18), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } },
+            'J10': { group: 'Aviation J', productCompatibilityGroup: 'Hydrocarbon', capacity: 12000, current: 2000, customer: 'Aviation Fuels Inc', product: 'Jet A-1', lastUpdated: daysAgo(1), measurements: { temperature: rand(60,70), level: rand(40,50), waterCut: rand(2,4), flowRate: 0, pressure: rand(1, 5) } }, 
+            'J11': { group: 'Aviation J', productCompatibilityGroup: 'Hydrocarbon', capacity: 12000, current: 4000, customer: 'Aviation Fuels Inc', product: 'Jet A-1', lastUpdated: daysAgo(9), measurements: { temperature: rand(62,72), level: rand(15,25), waterCut: rand(2,4), flowRate: 0, pressure: rand(1, 5) } }
         },
         masterCustomers: ['Apex Refining', 'Terra Verde Agriculture', 'GlobalChem Industries', 'Coastal Energy Supply', 'Vantage Polymers', 'Veridian Synthetics', 'Solara Chemicals', 'Quantum Nitriles', 'Axiom Materials', 'Aviation Fuels Inc', 'National Rail Freight', 'BulkTrans', 'Riverton Chemicals'],
         activeOpsDisplayFields: { orderNumber: true, licensePlate: true, product: true, tonnes: false },
+        masterIntermediates: PAL_INTERMEDIATES,
+        lineSegments: PAL_SEGMENTS,
+        lineups: PAL_LINEUPS,
     },
     CBY: {
         customerMatrix: [{ customer: 'Citywide Fuels', product: 'Diesel Max', tanks: ['T50', 'T51'] }],
@@ -180,11 +342,13 @@ export const TERMINAL_MASTER_DATA: { [key: string]: Partial<TerminalSettings> } 
         infrastructureModalityMapping: { 'S1': 'vessel', 'Bay 1': 'truck', 'Bay 2': 'truck' },
         assetHolds: {}, tankHolds: {},
         masterTanks: { 
-            'T50': { capacity: 10000, current: 5000, customer: 'Citywide Fuels', product: 'Diesel Max', lastUpdated: daysAgo(1), measurements: { temperature: rand(65,75), level: rand(25,35), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } }, 
-            'T51': { capacity: 10000, current: 8000, customer: 'Citywide Fuels', product: 'Diesel Max', lastUpdated: daysAgo(2), measurements: { temperature: rand(66,76), level: rand(40,50), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } } 
+            'T50': { group: 'North Tank Farm', productCompatibilityGroup: 'Hydrocarbon', capacity: 10000, current: 5000, customer: 'Citywide Fuels', product: 'Diesel Max', lastUpdated: daysAgo(1), measurements: { temperature: rand(65,75), level: rand(25,35), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } }, 
+            'T51': { group: 'North Tank Farm', productCompatibilityGroup: 'Hydrocarbon', capacity: 10000, current: 8000, customer: 'Citywide Fuels', product: 'Diesel Max', lastUpdated: daysAgo(2), measurements: { temperature: rand(66,76), level: rand(40,50), waterCut: rand(3,5), flowRate: 0, pressure: rand(1, 5) } } 
         },
         masterCustomers: ['Citywide Fuels'],
         activeOpsDisplayFields: { orderNumber: true, licensePlate: true, product: true, tonnes: true },
+        lineSegments: [],
+        lineups: [],
     },
      RVE: {
         customerMatrix: [{ customer: 'Riverton Chemicals', product: 'Methanol', tanks: ['R1', 'R2'] }, { customer: 'Riverton Chemicals', product: 'Caustic Soda', tanks: ['R3'] }],
@@ -192,16 +356,17 @@ export const TERMINAL_MASTER_DATA: { [key: string]: Partial<TerminalSettings> } 
         infrastructureModalityMapping: { 'L1': 'vessel', 'Rail 1': 'rail' },
         assetHolds: {}, tankHolds: {},
         masterTanks: { 
-            'R1': { capacity: 8000, current: 1000, customer: 'Riverton Chemicals', product: 'Methanol', lastUpdated: daysAgo(5), measurements: { temperature: rand(85,95), level: rand(8,12), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } }, 
-            'R2': { capacity: 8000, current: 4000, customer: 'Riverton Chemicals', product: 'Methanol', lastUpdated: daysAgo(3), measurements: { temperature: rand(86,96), level: rand(25,35), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } }, 
-            'R3': { capacity: 5000, current: 4500, customer: 'Riverton Chemicals', product: 'Caustic Soda', lastUpdated: daysAgo(12), measurements: { temperature: rand(95,105), level: rand(50,60), waterCut: rand(2,3), flowRate: 0, pressure: rand(1, 5) } } 
+            'R1': { group: 'Riverton Main', productCompatibilityGroup: 'Chemical', capacity: 8000, current: 1000, customer: 'Riverton Chemicals', product: 'Methanol', lastUpdated: daysAgo(5), measurements: { temperature: rand(85,95), level: rand(8,12), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } }, 
+            'R2': { group: 'Riverton Main', productCompatibilityGroup: 'Chemical', capacity: 8000, current: 4000, customer: 'Riverton Chemicals', product: 'Methanol', lastUpdated: daysAgo(3), measurements: { temperature: rand(86,96), level: rand(25,35), waterCut: rand(1,2), flowRate: 0, pressure: rand(1, 5) } }, 
+            'R3': { group: 'Riverton Main', productCompatibilityGroup: 'Caustic', capacity: 5000, current: 4500, customer: 'Riverton Chemicals', product: 'Caustic Soda', lastUpdated: daysAgo(12), measurements: { temperature: rand(95,105), level: rand(50,60), waterCut: rand(2,3), flowRate: 0, pressure: rand(1, 5) } } 
         },
         masterCustomers: ['Riverton Chemicals'],
         activeOpsDisplayFields: { orderNumber: true, product: true, tonnes: true },
+        lineSegments: [],
+        lineups: [],
     },
 };
 
-// FIX: Correctly shape the DEFAULT_SETTINGS object to match the AppSettings type
 export const DEFAULT_SETTINGS: AppSettings = {
     productGroups: PRODUCT_GROUPS,
     compatibility: {
@@ -219,102 +384,4 @@ export const DEFAULT_SETTINGS: AppSettings = {
     PAL: TERMINAL_MASTER_DATA.PAL as TerminalSettings,
     CBY: TERMINAL_MASTER_DATA.CBY as TerminalSettings,
     RVE: TERMINAL_MASTER_DATA.RVE as TerminalSettings,
-};
-
-
-// ===================================================================================
-//  EXPANDED MOCK OPERATIONS GENERATION
-// ===================================================================================
-
-const now = new Date();
-const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60000);
-const subMinutes = (date: Date, minutes: number) => new Date(date.getTime() - minutes * 60000);
-const addHours = (date: Date, hours: number) => new Date(date.getTime() + hours * 3600 * 1000);
-const subHours = (date: Date, hours: number) => new Date(date.getTime() - hours * 3600 * 1000);
-
-/**
- * A helper to logically progress an array of SOF items to a target event.
- * @param sofArray The initial SOF array (all pending).
- * @param allEvents The full sequence of possible events.
- * @param targetEvent The event to progress up to.
- * @param baseTime The time of the first event.
- * @param user The user to log for the completed steps.
- * @param stepMinutes The number of minutes between each step.
- * @returns An object containing the updated SOF array and the timestamp of the last completed event.
- */
-const progressSofArray = (
-    sofArray: any[], 
-    allEvents: string[], 
-    targetEvent: string, 
-    baseTime: Date, 
-    user: string,
-    stepMinutes: number = 5,
-    logContext: string = ''
-): { updatedSof: any[], lastTime: Date, activityLogs: any[] } => {
-    const newSof = JSON.parse(JSON.stringify(sofArray));
-    const targetIndex = allEvents.findIndex(e => e === targetEvent);
-    let lastTime = baseTime;
-    const activityLogs: any[] = [];
-
-    if (targetIndex > -1) {
-        for (let i = 0; i <= targetIndex; i++) {
-            const eventName = allEvents[i];
-            const eventIndexInSof = newSof.findIndex((s: any) => s.event === eventName);
-            if (eventIndexInSof > -1) {
-                lastTime = addMinutes(baseTime, i * stepMinutes);
-                newSof[eventIndexInSof] = {
-                    ...newSof[eventIndexInSof],
-                    status: 'complete',
-                    time: lastTime.toISOString(),
-                    user: user
-                };
-                 activityLogs.push({
-                    time: lastTime.toISOString(),
-                    user: user,
-                    action: 'SOF_UPDATE',
-                    details: `${eventName} marked complete${logContext}.`
-                });
-            }
-        }
-    }
-    return { updatedSof: newSof, lastTime, activityLogs };
-};
-
-
-export const createMockHolds = (terminal: string): any[] => {
-    if (terminal !== 'PAL') {
-        return [];
-    }
-    
-    // UPDATED: Use the current time as the reference.
-    const baseTime = new Date();
-    // Rounds to the next hour or half-hour for consistent start times.
-    baseTime.setMinutes(baseTime.getMinutes() > 30 ? 60 : 30, 0, 0);
-
-
-    const holds: any[] = [
-        {
-            id: 'hold-maint-bay2', resource: 'Bay 2', terminal: 'PAL',
-            startTime: addHours(baseTime, 1).toISOString(),
-            endTime: addHours(baseTime, 3).toISOString(),
-            reason: 'Preventative Maintenance', user: 'Maintenance Planner',
-            status: 'approved', workOrderStatus: 'Acknowledged',
-        },
-        {
-            id: 'hold-safety-bay4', resource: 'Bay 4', terminal: 'PAL',
-            startTime: addHours(baseTime, 4).toISOString(),
-            endTime: addHours(baseTime, 5).toISOString(),
-            reason: 'Safety Drill', user: 'Ops Lead',
-            status: 'approved',
-        },
-        {
-            id: 'hold-pending-sidingA', resource: 'Siding A', terminal: 'PAL',
-            startTime: addHours(baseTime, 2).toISOString(),
-            endTime: addHours(baseTime, 6).toISOString(),
-            reason: 'Corrective Maintenance', user: 'Operator 1',
-            status: 'pending', workOrderStatus: 'Requested',
-        }
-    ];
-
-    return holds;
 };

@@ -39,9 +39,7 @@ const Asset: React.FC<{ assetId: string; hold: Hold | undefined; onClick: () => 
 
 const TerminalMap: React.FC<TerminalMapProps> = ({ infrastructure, holds, onAssetClick }) => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { currentTerminalSettings } = context;
+    const currentTerminalSettings = context?.currentTerminalSettings || { infrastructureModalityMapping: {}, wharfDocklineMapping: {} };
 
     const { categorizedVesselInfra, categorizedTruckInfra, categorizedRailInfra } = useMemo(() => {
         const mapping = currentTerminalSettings.infrastructureModalityMapping || {};
@@ -87,6 +85,8 @@ const TerminalMap: React.FC<TerminalMapProps> = ({ infrastructure, holds, onAsse
             h.workOrderStatus !== 'Closed'
         );
     };
+
+    if (!context) return null;
 
     return (
         <div className="card p-4 sm:p-6 bg-slate-50">

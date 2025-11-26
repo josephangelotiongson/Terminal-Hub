@@ -2,6 +2,21 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // FIX: Removed circular dependency by defining and exporting the 'Modality' type directly in this file.
 export type Modality = 'vessel' | 'truck' | 'rail';
 
@@ -11,6 +26,7 @@ export type OperationStatus = 'planned' | 'active' | 'completed' | 'cancelled';
 
 export type View = 
     'dashboard' | 
+    'orders' |
     'planning' | 
     'active-operations-list' | 
     'operation-details' | 
@@ -27,7 +43,9 @@ export type View =
     'tank-status-details' |
     'dip-sheet' |
     'user-permissions' |
-    'manpower';
+    'manpower' |
+    'terminal-simulation' |
+    'lineup-manager';
 
 export type ActivityAction = 'CREATE' | 'UPDATE' | 'SOF_UPDATE' | 'STATUS_UPDATE' | 'REQUEUE' | 'DATA_LOG' | 'COMMENT' | 'SOF_EDIT' | 'SOF_REVERT' | 'REPORT_UPDATE' | 'DOCUMENT_UPLOAD' | 'DOCUMENT_DELETE' | 'SIGNATURE' | 'REQUEUE_REQUEST' | string;
 
@@ -236,6 +254,7 @@ export interface ArrivalChecklist {
     bolReceived: 'pending' | 'complete';
     coaReceived: 'pending' | 'complete';
     driverLicenseOk: 'pending' | 'complete';
+    arrivalPhoto?: string; // base64
 }
 
 export interface Operation {
@@ -342,7 +361,7 @@ export interface ScadaData {
 }
 
 export interface UIState {
-    planningViewMode: 'grid' | 'list' | 'kanban';
+    planningViewMode: 'grid' | 'list' | 'kanban' | 'calendar';
     columnVisibility?: {
         [terminal: string]: {
             [modality: string]: string[];
@@ -373,12 +392,37 @@ export interface CalibrationPoint {
     volume: number;
 }
 
+// --- NEW LINEUP TYPES ---
+export interface LineSegment {
+    id: string;
+    name: string;
+    sourceId: string;
+    targetId: string;
+    lengthMeters?: number;
+    volumeBarrels?: number;
+    diameterInches?: number;
+    status: 'active' | 'maintenance' | 'out-of-service';
+    lastProduct?: string;
+}
+
+export interface Lineup {
+    id: string;
+    name: string;
+    sourceId: string;
+    destinationId: string;
+    segmentIds: string[];
+    valid: boolean;
+}
+// ------------------------
+
 export interface TerminalSettings {
     masterCustomers: string[];
     masterTanks: {
         [tankName: string]: {
             capacity: number;
             current: number;
+            group?: string;
+            productCompatibilityGroup?: string;
             calibrationData?: CalibrationPoint[];
             // New fields for Tank History
             customer?: string;
@@ -412,6 +456,10 @@ export interface TerminalSettings {
     infrastructureModalityMapping: {
         [infraId: string]: Modality;
     };
+    parkingLots?: string[];
+    bayParkingMapping?: {
+        [bayId: string]: string;
+    };
     tankHolds: {
         [tankName: string]: {
             active: boolean;
@@ -434,6 +482,14 @@ export interface TerminalSettings {
         product?: boolean;
         tonnes?: boolean;
     };
+    // New field for storing map node coordinates
+    mapLayout?: {
+        [nodeId: string]: { x: number; y: number };
+    };
+    // --- NEW Lineup Fields ---
+    masterIntermediates?: string[]; // List of manifold/pump IDs
+    lineSegments?: LineSegment[];
+    lineups?: Lineup[];
 }
 
 export interface ManpowerSchedule {

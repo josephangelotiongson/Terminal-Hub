@@ -8,15 +8,17 @@ type ConfigView = 'compatibility' | 'mappings' | 'infra-mappings' | 'infra-modal
 
 const ProductCompatibility: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { settings, setSettings } = context;
+    const settings = context?.settings || { productGroups: {}, compatibility: {} };
+    const setSettings = context?.setSettings || (() => {});
+    
     const { productGroups = {}, compatibility = {} } = settings;
 
     const groupNames = useMemo(() => {
         return [...new Set(Object.values(productGroups))].sort();
     }, [productGroups]);
     
+    if (!context) return null;
+
     const handleCellClick = (rowGroup: string, colGroup: string) => {
         setSettings(prevSettings => {
             const newCompatibility = JSON.parse(JSON.stringify(prevSettings.compatibility || {})) as AppSettings['compatibility'];
@@ -72,6 +74,7 @@ const ProductCompatibility: React.FC = () => {
 
 const TankSelector: React.FC<{ selectedTanks: string[]; onChange: (tanks: string[]) => void }> = ({ selectedTanks, onChange }) => {
     const context = useContext(AppContext);
+    
     if (!context) return null;
     const { currentTerminalSettings } = context;
     const allTanks = Object.keys(currentTerminalSettings.masterTanks || {}).sort();
@@ -103,12 +106,13 @@ const TankSelector: React.FC<{ selectedTanks: string[]; onChange: (tanks: string
 
 const CustomerMappings: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { settings, setSettings, selectedTerminal, currentTerminalSettings } = context;
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [formState, setFormState] = useState({ customer: '', product: '', tanks: [] as string[] });
     const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+    
+    if (!context) return null;
+
+    const { settings, setSettings, selectedTerminal, currentTerminalSettings } = context;
     
     const handleSettingChange = (key: string, value: any) => {
         setSettings(prev => {
@@ -241,11 +245,12 @@ const CustomerMappings: React.FC = () => {
 
 const InfraTankMappings: React.FC = () => {
     const context = useContext(AppContext);
+    const [editingInfra, setEditingInfra] = useState<string | null>(null);
+    const [selectedTanks, setSelectedTanks] = useState<string[]>([]);
+    
     if (!context) return null;
 
     const { settings, setSettings, selectedTerminal, currentTerminalSettings } = context;
-    const [editingInfra, setEditingInfra] = useState<string | null>(null);
-    const [selectedTanks, setSelectedTanks] = useState<string[]>([]);
     
     const infraMapping = currentTerminalSettings.infrastructureTankMapping || {};
     const docklineToWharfMap = createDocklineToWharfMap(currentTerminalSettings);
@@ -378,10 +383,11 @@ const InfraModalityMappings: React.FC = () => {
 
 const ContractRatesConfig: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return null;
+    // Safe defaults
+    const settings = context?.settings || { contracts: { serviceRates: {}, customerRates: {} }, vesselServices: [], productServices: [], modalityServices: {} as any, masterProducts: [] };
+    const currentTerminalSettings = context?.currentTerminalSettings || { masterCustomers: [], customerMatrix: [] };
+    const setSettings = context?.setSettings || (() => {});
 
-    const { settings, setSettings, currentTerminalSettings } = context;
-    
     const [localContracts, setLocalContracts] = useState(settings.contracts);
     
     const allServices = useMemo(() => {
@@ -396,6 +402,8 @@ const ContractRatesConfig: React.FC = () => {
         });
         return Array.from(services).sort();
     }, [settings.vesselServices, settings.productServices, settings.modalityServices]);
+
+    if (!context) return null;
 
     const handleServiceRateChange = (serviceName: string, rate: string) => {
         const numRate = parseFloat(rate);

@@ -1,13 +1,20 @@
-
 import React, { useContext, useState, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, DipSheetEntry, Transfer } from '../types';
 
 const DipSheet: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <div>Loading context...</div>;
-
-    const { activeOpId, getOperationById, saveCurrentPlan, currentUser, currentTerminalSettings, editingOp, setEditingOp, simulatedTime } = context;
+    
+    // Safe defaults
+    const activeOpId = context?.activeOpId || null;
+    const getOperationById = context?.getOperationById || (() => undefined);
+    const saveCurrentPlan = context?.saveCurrentPlan || (() => {});
+    const currentUser = context?.currentUser || { name: 'Unknown' };
+    const currentTerminalSettings = context?.currentTerminalSettings || { masterTanks: {} };
+    const editingOp = context?.editingOp || null;
+    const setEditingOp = context?.setEditingOp || (() => {});
+    const simulatedTime = context?.simulatedTime || new Date();
+    const addActivityLog = context?.addActivityLog || (() => {});
 
     const op = getOperationById(activeOpId);
     
@@ -151,6 +158,7 @@ const DipSheet: React.FC = () => {
         });
     }, [sheetData, pumpingStartTime, safeFill, primaryTransfer?.tonnes, primaryTransfer?.direction]);
 
+    if (!context) return <div>Loading context...</div>;
 
     const handleUpdateEntry = (id: string, field: keyof DipSheetEntry, value: string) => {
         setEditingOp(currentOp => {
@@ -174,7 +182,7 @@ const DipSheet: React.FC = () => {
     const handleSave = () => {
         if(op && editingOp) {
             saveCurrentPlan(editingOp);
-            context.addActivityLog(op.id, 'UPDATE', 'Dip Calculation Sheet was updated.');
+            addActivityLog(op.id, 'UPDATE', 'Dip Calculation Sheet was updated.');
         }
     };
 
@@ -233,23 +241,4 @@ const DipSheet: React.FC = () => {
                                         <td className="p-0 border h-10">
                                             {entry.isStartRow ? <span className="font-bold">START VOLUME</span> : (isAuto ? <span className="p-2 block">{entry.time}</span> : <input type="time" className="w-full h-full border-none text-center bg-transparent" value={entry.time} onChange={e => handleUpdateEntry(entry.id, 'time', e.target.value)} />)}
                                         </td>
-                                        <td className="p-0 border">{isAuto ? <span className="p-2 block">{entry.dipReading}</span> : <input type="text" className="w-full h-full border-none text-center bg-transparent" value={entry.dipReading} onChange={e => handleUpdateEntry(entry.id, 'dipReading', e.target.value)} />}</td>
-                                        <td className="p-0 border">{isAuto ? <span className="p-2 block">{entry.tankInnage}</span> : <input type="number" className="w-full h-full border-none text-center bg-transparent" value={entry.tankInnage} onChange={e => handleUpdateEntry(entry.id, 'tankInnage', e.target.value)} />}</td>
-                                        <td className="p-1 border bg-slate-50">{entry.calculated?.totalQtyTransferred}</td>
-                                        <td className="p-1 border bg-slate-50">{entry.calculated?.transferRate}</td>
-                                        <td className="p-1 border bg-slate-50">{entry.calculated?.ullageRemaining}</td>
-                                        <td className="p-1 border bg-slate-50">{entry.calculated?.estTimeToComplete}</td>
-                                        <td className="p-1 border bg-slate-50">{entry.calculated?.totalQtyTransferred}</td>
-                                        <td className="p-0 border">{isAuto ? <span className="p-2 block">{entry.initials}</span> : <input type="text" className="w-full h-full border-none text-center bg-transparent" value={entry.initials} onChange={e => handleUpdateEntry(entry.id, 'initials', e.target.value)} />}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-export default DipSheet;
+                                        <td className="p-0 border">{isAuto ? <span className="p-2 block">{entry.dipReading}</span> : <input type="text" className="w-full h-full border-none text-center bg-transparent" value={entry.dipReading} onChange={e => handleUpdateEntry(entry.id, 'dipReading', e.target.value)}

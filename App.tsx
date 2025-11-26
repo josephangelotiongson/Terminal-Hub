@@ -1,6 +1,12 @@
 
 
 
+
+
+
+
+
+
 import React, { useContext } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -29,6 +35,9 @@ import DirectToBayModal from './components/DirectToBayModal';
 import DelayModal from './components/DelayModal';
 import RedirectBayModal from './components/RedirectBayModal';
 import AcceptNoShowModal from './components/AcceptNoShowModal';
+import TerminalSimulation from './components/TerminalSimulation'; // New Component
+import LineupManager from './components/LineupManager'; // New Component
+import OrdersList from './components/OrdersList'; // New Component
 import { AppProvider, AppContext } from './context/AppContext';
 
 const AppContent: React.FC = () => {
@@ -45,6 +54,7 @@ const AppContent: React.FC = () => {
     const renderView = () => {
         switch (currentView) {
             case 'dashboard': return <Dashboard />;
+            case 'orders': return <OrdersList />;
             case 'planning': return <PlanningBoard />;
             case 'active-operations-list': return <ActiveOpsList />;
             case 'operation-details': return <OperationDetails />;
@@ -54,12 +64,14 @@ const AppContent: React.FC = () => {
             case 'reports': return <Reports />;
             case 'config-matrix': return <ConfigMatrix />;
             case 'master-data': return <MasterData />;
-            case 'outage-planning': return <OutagePlanning />; // Add new case for outage planning
+            case 'outage-planning': return <OutagePlanning />;
             case 'maintenance': return <Maintenance />;
             case 'tank-status': return <TankStatus />;
             case 'tank-status-details': return <TankStatusDetails />;
             case 'user-permissions': return <UserPermissions />;
             case 'manpower': return <Manpower />;
+            case 'terminal-simulation': return <TerminalSimulation />;
+            case 'lineup-manager': return <LineupManager />;
             default: return <Dashboard />;
         }
     };

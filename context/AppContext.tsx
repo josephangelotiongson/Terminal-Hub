@@ -1,6 +1,8 @@
 
 
 
+
+
 import React, { createContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
 import { Operation, AppSettings, Hold, ScadaData, UIState, View, TerminalSettings, Modality, ActivityAction, ActivityLogItem, ViewHistoryItem, RequeueDetails, User, SOFItem, DipSheetEntry, WorkOrderStatus, WorkOrderNote, CycleTimeData, Transfer, OutageStatus, TransferPlanItem, HistorianData, HistorianDataPoint, SpecialServiceData, ManpowerSchedule, ReportType } from '../types';
 import { dataService } from '../services/api';
@@ -166,12 +168,16 @@ interface AppContextType {
     openRequestRescheduleModal: (opId: string) => void;
     closeRequestRescheduleModal: () => void;
     requestReschedule: (opId: string, reason: string, notes: string) => void;
+
+    // Layout
+    saveTerminalMapLayout: (layout: { [nodeId: string]: { x: number; y: number } }) => void;
 }
 
 export const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const INITIAL_USERS: User[] = [
     { name: 'Ops Lead', role: 'Operations Lead', shift: 'Day' },
+    { name: 'Engineering Lead', role: 'Engineering', shift: 'Day' },
     { name: 'Operator 1', role: 'Operator', shift: 'Day', assignedModalities: ['truck'], assignedAreas: ['Bay 1', 'Bay 2', 'Bay 3', 'Bay 4'] },
     { name: 'Operator 2', role: 'Operator', shift: 'Day', assignedModalities: ['vessel'], assignedAreas: ['L12', 'L13'] },
     { name: 'Operator 3', role: 'Operator', shift: 'Swing', assignedModalities: ['rail'], assignedAreas: ['Siding A', 'Siding B'] },
@@ -205,6 +211,8 @@ const INITIAL_UI_STATE: UIState = {
     },
     completedOps: { activeTab: 'list' }
 };
+
+const TIME_KEY = 'term_hub_sim_time_v1';
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [operations, setOperations] = useState<Operation[]>([]);
@@ -253,11 +261,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const [requestRescheduleModalState, setRequestRescheduleModalState] = useState<{ isOpen: boolean; opId: string | null }>({ isOpen: false, opId: null });
 
 
-    // Simulation State
-    const [simulatedTime, setSimulatedTime] = useState<Date>(MOCK_CURRENT_TIME);
+    // Simulation State - Persisted
+    const [simulatedTime, setSimulatedTime] = useState<Date>(() => {
+        const stored = localStorage.getItem(TIME_KEY);
+        return stored ? new Date(stored) : MOCK_CURRENT_TIME;
+    });
     const [isTimePlaying, setIsTimePlaying] = useState(false);
     const simulatedTimeRef = useRef(simulatedTime);
     simulatedTimeRef.current = simulatedTime;
+
+    // Persist Simulated Time
+    useEffect(() => {
+        localStorage.setItem(TIME_KEY, simulatedTime.toISOString());
+    }, [simulatedTime]);
 
     // Time simulation effect
     useEffect(() => {
@@ -373,6 +389,67 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return () => clearInterval(intervalId);
     }, []); // Empty dependency array ensures this runs only once.
 
+    // EFFECT: Live Transfer Progress Simulation (for active pumping)
+    useEffect(() => {
+        const intervalId = setInterval(() => {
+            const now = simulatedTimeRef.current.getTime();
+            let hasChanges = false;
+
+            const updatedOps = operationsRef.current.map(op => {
+                if (op.status !== 'active' || (op.modality !== 'truck' && op.modality !== 'rail')) {
+                    return op;
+                }
+
+                const transfer = op.transferPlan?.[0]?.transfers?.[0];
+                if (!transfer || !transfer.sof) {
+                    return op;
+                }
+
+                const maxLoop = Math.max(1, ...transfer.sof.map(s => s.loop));
+                const currentLoopSof = transfer.sof.filter(s => s.loop === maxLoop);
+
+                const pumpingStartedEvent = currentLoopSof.find(s => s.event.includes('Pumping Started') && s.status === 'complete');
+                const pumpingStoppedEvent = currentLoopSof.find(s => s.event.includes('Pumping Stopped') && s.status === 'complete');
+
+                if (!pumpingStartedEvent || pumpingStoppedEvent) {
+                    return op;
+                }
+                
+                hasChanges = true;
+                const newOp = JSON.parse(JSON.stringify(op));
+                const newTransfer = newOp.transferPlan[0].transfers[0];
+
+                const startTime = new Date(pumpingStartedEvent.time).getTime();
+                const elapsedHours = (now - startTime) / (1000 * 60 * 60);
+
+                if (elapsedHours <= 0) {
+                    return op;
+                }
+                
+                const plannedRate = newTransfer.tonnes / (newOp.durationHours || 1);
+                const opIdSeed = parseInt(newOp.id.replace(/[^0-9]/g, '').slice(-5)) || 1;
+                const rateModifier = 0.8 + (opIdSeed % 100 / 100) * 0.6; 
+                const mockRate = plannedRate * rateModifier;
+
+                let transferred = Math.min(newTransfer.tonnes, elapsedHours * mockRate);
+                
+                if (transferred >= newTransfer.tonnes) {
+                    transferred = newTransfer.tonnes * 0.999;
+                }
+
+                newTransfer.transferredTonnes = transferred;
+                
+                return newOp;
+            });
+
+            if (hasChanges) {
+                setOperations(updatedOps);
+            }
+        }, 5000); // Update every 5 seconds
+
+        return () => clearInterval(intervalId);
+    }, []); // Empty dependency array, runs once.
+
     // Automatically flag overdue planned operations for rescheduling
     useEffect(() => {
         const intervalId = setInterval(() => {
@@ -430,7 +507,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const allTerminalInfra = Object.keys(infraMap);
 
         // For leads, allow everything and reset filters.
-        if (currentUser && (currentUser.role === 'Operations Lead' || currentUser.delegatedBy)) {
+        if (currentUser && (currentUser.role === 'Operations Lead' || currentUser.role === 'Engineering' || currentUser.delegatedBy)) {
             setUserAllowedInfra(allTerminalInfra);
             setWorkspaceFilter('truck');
             return;
@@ -2119,6 +2196,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ));
     };
 
+    // --- MAP LAYOUT MANAGEMENT ---
+    const saveTerminalMapLayout = (layout: { [nodeId: string]: { x: number; y: number } }) => {
+        setSettings(prevSettings => {
+            const newSettings = JSON.parse(JSON.stringify(prevSettings)) as AppSettings;
+            if (!newSettings[selectedTerminal]) {
+                // Fallback if terminal settings don't exist (shouldn't happen)
+                return prevSettings; 
+            }
+            
+            // Merge new layout with existing
+            newSettings[selectedTerminal].mapLayout = {
+                ...(newSettings[selectedTerminal].mapLayout || {}),
+                ...layout
+            };
+            
+            return newSettings;
+        });
+    };
+
     const contextValue: AppContextType = {
         operations, setOperations,
         settings, setSettings,
@@ -2210,6 +2306,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         openRequestRescheduleModal,
         closeRequestRescheduleModal,
         requestReschedule,
+        saveTerminalMapLayout,
     };
     
     return <AppContext.Provider value={contextValue}>{children}</AppContext.Provider>;

@@ -152,7 +152,7 @@ const TruckReportTable: React.FC<{
 };
 
 const CompletedOpCard: React.FC<{ op: Operation; onViewDetails: (op: Operation) => void }> = ({ op, onViewDetails }) => {
-    const plannedTonnes = useMemo(() => op.transferPlan.reduce((sum, line) => sum + line.transfers.reduce((s, t) => s + t.tonnes, 0), 0), [op.transferPlan]);
+    const plannedTonnes = useMemo(() => op.transferPlan.reduce((sum, line) => sum + line.transfers.reduce((s, t) => sum + t.tonnes, 0), 0), [op.transferPlan]);
     const actualTonnes = useMemo(() => op.transferPlan.reduce((sum, line) => sum + line.transfers.reduce((s, t) => s + (t.loadedWeight || t.transferredTonnes || 0), 0), 0), [op.transferPlan]);
     const plannedDuration = op.durationHours || 0;
     const actualDuration = useMemo(() => calculateActualDuration(op), [op]);
@@ -191,10 +191,20 @@ const CompletedOpCard: React.FC<{ op: Operation; onViewDetails: (op: Operation) 
 
 const CompletedOps: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <p>Loading...</p>;
+    
+    // Safe defaults
+    const operations = context?.operations || [];
+    const selectedTerminal = context?.selectedTerminal || '';
+    const workspaceFilter = context?.workspaceFilter || 'truck';
+    const workspaceSearchTerm = context?.workspaceSearchTerm || '';
+    const setSearchTerm = context?.setWorkspaceSearchTerm || (() => {});
+    const settings = context?.settings || { contracts: { serviceRates: {}, customerRates: {} } };
+    const updateCompletedOperationDetails = context?.updateCompletedOperationDetails || (() => {});
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' };
+    const uiState = context?.uiState || { completedOps: { activeTab: 'list' } };
+    const setCompletedOpsTab = context?.setCompletedOpsTab || (() => {});
+    const setWorkspaceFilter = context?.setWorkspaceFilter || (() => {});
 
-    // FIX: Aliased 'setWorkspaceSearchTerm' to 'setSearchTerm' to match prop expected by WorkspaceSearch component.
-    const { operations, selectedTerminal, workspaceFilter, setWorkspaceFilter, workspaceSearchTerm, setWorkspaceSearchTerm: setSearchTerm, settings, updateCompletedOperationDetails, currentUser, uiState, setCompletedOpsTab } = context;
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedOp, setSelectedOp] = useState<Operation | null>(null);
     const activeTab = uiState.completedOps?.activeTab || 'list';
@@ -299,6 +309,8 @@ const CompletedOps: React.FC = () => {
             return op.modality === workspaceFilter;
         });
     }, [completedOps, workspaceFilter]);
+
+    if (!context) return <p>Loading...</p>;
 
     const handleViewDetails = (op: Operation) => {
         setSelectedOp(op);

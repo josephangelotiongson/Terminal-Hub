@@ -1,7 +1,6 @@
 
 import { AppSettings, Modality, TerminalSettings, ContractRates, Operation, ActivityLogItem, SOFItem, Hold, RequeueDetails } from '../types';
 import { SOF_EVENTS_MODALITY, VESSEL_COMMODITY_EVENTS, VESSEL_COMMON_EVENTS, MOCK_CURRENT_TIME, LINE_CLEANING_EVENTS } from '../constants';
-// FIX: Corrected typo in imported function name from deriveTruckStatusFromSof to deriveStatusFromSof.
 import { deriveStatusFromSof, validateOperationPlan, calculateAndSetCycleTime } from '../utils/helpers';
 import { TERMINAL_MASTER_DATA, MODALITY_SERVICES, PRODUCT_SERVICES, DEFAULT_SETTINGS } from './masterData';
 
@@ -9,58 +8,92 @@ import { TERMINAL_MASTER_DATA, MODALITY_SERVICES, PRODUCT_SERVICES, DEFAULT_SETT
 //  CONSISTENT MOCK OPERATIONS GENERATION
 // ===================================================================================
 
-/**
- * NOTE TO MAINTAINER & AI:
- * All time-based calculations are derived relative to a fixed constant `MOCK_CURRENT_TIME`.
- * This ensures that every time the app is loaded, the current day appears as a busy, active day,
- * with the state of the terminal being predictable. This is a core requirement.
- * The truck data is now systematically generated to ensure a saturated, non-overlapping schedule.
- *
- * PLEASE DO NOT:
- * - Revert this to a dynamic `new Date()` reference.
- */
-
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60000);
 const subMinutes = (date: Date, minutes: number) => new Date(date.getTime() - minutes * 60000);
 const addHours = (date: Date, hours: number) => new Date(date.getTime() + hours * 3600 * 1000);
 const subHours = (date: Date, hours: number) => new Date(date.getTime() - hours * 3600 * 1000);
+const addDays = (date: Date, days: number) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 
+const TRUCK_EVENT_DETAILS: Record<string, string> = {
+    'Arrived': 'Truck arrived at terminal gate.',
+    'Ready / Approved': 'Paperwork verified. Safety check passed. Truck waiting for bay.',
+    'Directed to Bay': 'Driver instructed to proceed to bay.',
+    'On Bay': 'Truck positioned on bay. Grounding connected.',
+    'Pumping Started': 'Hoses connected. Pump activated.',
+    'Pumping Stopped': 'Target volume transferred. Pump stopped.',
+    'Post-Load Weighing': 'Truck verified on weighbridge. Weights recorded.',
+    'Seal Applied': 'Security seals applied to all compartments.',
+    'BOL Printed': 'Bill of Lading generated and handed to driver.',
+    'Departed': 'Truck checked out at gate. Departed terminal.'
+};
+
+// Locally defined SOF lists to ensure they are always present during generation
+const LOCAL_TRUCK_SOF = ['Arrived', 'Ready / Approved', 'Directed to Bay', 'On Bay', 'Pumping Started', 'Pumping Stopped', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Departed'];
+const LOCAL_RAIL_SOF = ['Arrived at Terminal', 'On Siding', 'Hose Connect', 'Checks OK', 'Pumping Started', 'Pumping Stopped', 'Hose Disconnect', 'Paperwork Done', 'Departed'];
+
+/**
+ * Progresses an array of SOF items sequentially up to a target event.
+ * Uses custom delays to simulate realistic durations (e.g. 60 mins for pumping).
+ */
 const progressSofArray = (
     sofArray: SOFItem[], 
     allEvents: string[], 
     targetEvent: string, 
     baseTime: Date, 
     user: string,
-    stepMinutes: number = 5,
-    logContext: string = ''
+    defaultStepMinutes: number = 10,
+    logContext: string = '',
+    customDelays: Record<string, number> = {}
 ): { updatedSof: SOFItem[], lastTime: Date, activityLogs: ActivityLogItem[] } => {
     const newSof = JSON.parse(JSON.stringify(sofArray));
-    const targetIndex = allEvents.findIndex(e => e === targetEvent);
-    let lastTime = baseTime;
+    const targetIndex = allEvents.findIndex(e => e.includes(targetEvent)); // Allow partial match for robustness
+    let currentTime = baseTime.getTime();
     const activityLogs: ActivityLogItem[] = [];
 
     if (targetIndex > -1) {
         for (let i = 0; i <= targetIndex; i++) {
             const eventName = allEvents[i];
+            
+            // Find the item in the SOF array (handle potential Rework prefixes if needed in future, currently standard)
             const eventIndexInSof = newSof.findIndex((s: SOFItem) => s.event === eventName);
+            
             if (eventIndexInSof > -1) {
-                lastTime = addMinutes(baseTime, i * stepMinutes);
+                // Determine how much time to add BEFORE this event happens relative to the previous one
+                // For the first event, we add 0 (it happens AT baseTime) unless a delay is forced.
+                let delay = i === 0 ? 0 : defaultStepMinutes;
+                
+                // Check for custom delays.
+                // NOTE: A custom delay for 'Pumping Stopped' means "Time elapsed SINCE the previous step (Pumping Started)".
+                // This allows us to inject the transfer duration.
+                const cleanEventName = eventName.replace(/^(Rework #\d+: )/, '');
+                if (customDelays[cleanEventName] !== undefined) {
+                    delay = customDelays[cleanEventName];
+                }
+
+                currentTime += delay * 60000;
+                const timeString = new Date(currentTime).toISOString();
+
                 newSof[eventIndexInSof] = {
                     ...newSof[eventIndexInSof],
                     status: 'complete',
-                    time: lastTime.toISOString(),
+                    time: timeString,
                     user: user
                 };
-                 activityLogs.push({
-                    time: lastTime.toISOString(),
+
+                const details = TRUCK_EVENT_DETAILS[cleanEventName] 
+                    ? `${TRUCK_EVENT_DETAILS[cleanEventName]}${logContext}`
+                    : `${eventName} marked complete${logContext}.`;
+
+                activityLogs.push({
+                    time: timeString,
                     user: user,
                     action: 'SOF_UPDATE',
-                    details: `${eventName} marked complete${logContext}.`
+                    details: details
                 });
             }
         }
     }
-    return { updatedSof: newSof, lastTime, activityLogs };
+    return { updatedSof: newSof, lastTime: new Date(currentTime), activityLogs };
 };
 
 export const createMockHolds = (terminal: string): Hold[] => {
@@ -105,82 +138,88 @@ const DRIVER_NAMES = ['John Smith', 'Maria Garcia', 'David Chen', 'Fatima Al-Jam
 
 // NEW: Fully hardcoded truck schedule to guarantee no overlaps
 const getHardcodedTruckOps = (): any[] => {
-    const palSettings = DEFAULT_SETTINGS.PAL;
-    const { infrastructureTankMapping, customerMatrix } = palSettings;
-
-    const bayToValidPlans: Record<string, { customer: string, product: string, from: string }[]> = {};
-     const truckBays = Object.keys(palSettings.infrastructureModalityMapping || {})
-        .filter(infra => palSettings.infrastructureModalityMapping![infra] === 'truck')
-        .sort();
+    // Helper to make code cleaner
+    // State maps to targetSofEvent. Duration 1 means 60 minutes of PUMPING time.
+    // Spacing is increased to ~2.5h to account for 1h pump + 40m pre-ops + 40m post-ops.
     
-    truckBays.forEach(bay => {
-        bayToValidPlans[bay] = [];
-        const connectedTanks = infrastructureTankMapping![bay] || [];
-        customerMatrix.forEach(mapping => {
-            const validTanksForMapping = mapping.tanks.filter(tank => connectedTanks.includes(tank));
-            validTanksForMapping.forEach(tank => {
-                bayToValidPlans[bay].push({ customer: mapping.customer, product: mapping.product, from: tank });
-            });
-        });
-    });
+    // SAFETY RULES APPLIED:
+    // Bay 1 (Clean): Petro-Fuel 95 (B45/B46), ULP 98 (A01).
+    // Bay 2 (Bio/Agri): Bio-Fuel E85 (A02), Agri-Oil (B47). NO HYDROCARBONS.
+    // Bay 3 (Aviation): Jet A-1 (J10/J11) ONLY.
+    // Bay 4 (Gas/Jet): ULP 98 (A01), Jet A-1 (J11).
+    // Bay 5-8 (Distillates & Heavy): Diesel Max (C13/C38), Crude Oil (D05).
+    // Bay 9-10 (Chemicals): Methanol (E15), Indu-Chem (E14).
 
     const ops = [
-        // Bay 1
-        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 4.5), duration: 1, state: 'Departed' },
-        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 3.25), duration: 0.75, state: 'Departed' },
-        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 2.25), duration: 1, state: 'Pumping Stopped' },
-        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 1), duration: 1, state: 'Pumping Started' },
-        { bay: 'Bay 1', eta: addMinutes(MOCK_CURRENT_TIME, 15), duration: 0.75, state: 'Arrived' },
-        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 1.5), duration: 1, state: 'Planned' },
-        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 2.75), duration: 1.25, state: 'Planned' },
-        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 4.25), duration: 0.75, state: 'Planned' },
+        // --- Bay 1: Gasoline ---
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 6), duration: 1, state: 'Departed', 
+          plan: { customer: 'Apex Refining', product: 'Petro-Fuel 95', from: 'B45' } },
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 3.5), duration: 1, state: 'Departed',
+          plan: { customer: 'Apex Refining', product: 'ULP 98', from: 'A01' } },
+        { bay: 'Bay 1', eta: subHours(MOCK_CURRENT_TIME, 1.2), duration: 1, state: 'Pumping Started',
+          plan: { customer: 'Apex Refining', product: 'Petro-Fuel 95', from: 'B46' } }, 
+        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 1.5), duration: 1, state: 'Planned',
+          plan: { customer: 'BulkTrans', product: 'ULP 98', from: 'A01' } }, // Sourcing from A01
+        { bay: 'Bay 1', eta: addHours(MOCK_CURRENT_TIME, 3.5), duration: 1, state: 'Planned',
+          plan: { customer: 'Apex Refining', product: 'Petro-Fuel 95', from: 'B45' } },
 
-        // Bay 2 (Has hold from T+1h to T+3h)
-        { bay: 'Bay 2', eta: subHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Departed' },
-        { bay: 'Bay 2', eta: subHours(MOCK_CURRENT_TIME, 1.75), duration: 1, state: 'Pumping Started' },
-        { bay: 'Bay 2', eta: subMinutes(MOCK_CURRENT_TIME, 30), duration: 0.75, state: 'Arrived' },
-        { bay: 'Bay 2', eta: addHours(MOCK_CURRENT_TIME, 3.25), duration: 1, state: 'Planned' }, // After hold
-        { bay: 'Bay 2', eta: addHours(MOCK_CURRENT_TIME, 4.5), duration: 1, state: 'Planned' },
+        // --- Bay 2: Biofuels/Agri (No Hydrocarbons to avoid contamination) ---
+        { bay: 'Bay 2', eta: subHours(MOCK_CURRENT_TIME, 5), duration: 1, state: 'Departed',
+          plan: { customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', from: 'A02' } },
+        { bay: 'Bay 2', eta: subHours(MOCK_CURRENT_TIME, 2.2), duration: 1, state: 'Pumping Stopped',
+          plan: { customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', from: 'B47' } }, // Agri-Oil is compatible-ish in dedicated bay
+        { bay: 'Bay 2', eta: addMinutes(MOCK_CURRENT_TIME, 10), duration: 1, state: 'Arrived',
+          plan: { customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', from: 'A02' } }, 
+        { bay: 'Bay 2', eta: addHours(MOCK_CURRENT_TIME, 3.2), duration: 1, state: 'Planned',
+          plan: { customer: 'National Rail Freight', product: 'Bio-Fuel E85', from: 'A02' } }, // Matched to Tank A02 product
 
-        // Bay 3
-        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 5), duration: 1.25, state: 'Departed' },
-        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 3.5), duration: 1, state: 'Pumping Stopped' },
-        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 2.25), duration: 1, state: 'On Bay' },
-        { bay: 'Bay 3', eta: subMinutes(MOCK_CURRENT_TIME, 60), duration: 1, state: 'Ready / Approved' },
-        { bay: 'Bay 3', eta: addMinutes(MOCK_CURRENT_TIME, 30), duration: 0.75, state: 'Planned' },
-        { bay: 'Bay 3', eta: addHours(MOCK_CURRENT_TIME, 1.75), duration: 1, state: 'Planned' },
-        { bay: 'Bay 3', eta: addHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Planned' },
+        // --- Bay 3: Aviation (Strictly Jet A-1) ---
+        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 4.5), duration: 1, state: 'Departed',
+          plan: { customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: 'J10' } },
+        { bay: 'Bay 3', eta: subHours(MOCK_CURRENT_TIME, 0.8), duration: 1, state: 'On Bay',
+          plan: { customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: 'J11' } }, 
+        { bay: 'Bay 3', eta: addHours(MOCK_CURRENT_TIME, 2), duration: 1, state: 'Planned',
+          plan: { customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: 'J10' } },
         
-        // Bay 4 (Has hold from T+4h to T+5h)
-        { bay: 'Bay 4', eta: subHours(MOCK_CURRENT_TIME, 2.5), duration: 1, state: 'Pumping Started' },
-        { bay: 'Bay 4', eta: subHours(MOCK_CURRENT_TIME, 1.25), duration: 1, state: 'Directed to Bay' },
-        { bay: 'Bay 4', eta: addMinutes(MOCK_CURRENT_TIME, 0), duration: 1, state: 'Planned' },
-        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 1.25), duration: 1, state: 'Planned' },
-        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 2.5), duration: 1, state: 'Planned' },
-        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 5.25), duration: 1, state: 'Planned' }, // After hold
+        // --- Bay 4: Gas/Jet (Mixed Clean) ---
+        { bay: 'Bay 4', eta: subHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Departed',
+          plan: { customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: 'J11' } },
+        { bay: 'Bay 4', eta: addHours(MOCK_CURRENT_TIME, 5.5), duration: 1, state: 'Planned', // Scheduled after hold
+          plan: { customer: 'Apex Refining', product: 'ULP 98', from: 'A01' } }, 
 
-        // ... and so on for other bays
-        { bay: 'Bay 5', eta: subHours(MOCK_CURRENT_TIME, 0.5), duration: 1, state: 'Arrived' },
-        { bay: 'Bay 6', eta: addMinutes(MOCK_CURRENT_TIME, 15), duration: 1, state: 'Planned' },
-        { bay: 'Bay 7', eta: subMinutes(MOCK_CURRENT_TIME, 15), duration: 1, state: 'Ready / Approved' },
-        { bay: 'Bay 8', eta: addHours(MOCK_CURRENT_TIME, 1), duration: 1, state: 'Planned' },
-        { bay: 'Bay 9', eta: addHours(MOCK_CURRENT_TIME, 2), duration: 1, state: 'Planned' },
-        { bay: 'Bay 10', eta: subHours(MOCK_CURRENT_TIME, 1.5), duration: 1, state: 'On Bay' },
+        // --- Bay 5-8: Distillates & Heavy (Diesel, Crude) ---
+        { bay: 'Bay 5', eta: subMinutes(MOCK_CURRENT_TIME, 20), duration: 1, state: 'Arrived',
+          plan: { customer: 'Coastal Energy Supply', product: 'Diesel Max', from: 'C13' } },
+        { bay: 'Bay 5', eta: addHours(MOCK_CURRENT_TIME, 2), duration: 1, state: 'Planned',
+          plan: { customer: 'Coastal Energy Supply', product: 'Diesel Max', from: 'C13' } }, // Switched Crude to Diesel for consistency
         
-        // NEW TRUCKS FOR RESCHEDULE PANEL
-        { bay: 'Bay 5', eta: addHours(MOCK_CURRENT_TIME, 3), duration: 1, state: 'Planned', special: 'high-priority-reschedule' },
-        { bay: 'Bay 6', eta: subMinutes(MOCK_CURRENT_TIME, 15), duration: 1, state: 'Planned' },
-        { bay: 'Bay 7', eta: subMinutes(MOCK_CURRENT_TIME, 45), duration: 1, state: 'Planned', special: 'no-show' }, // Should be flagged as no-show
+        { bay: 'Bay 6', eta: addMinutes(MOCK_CURRENT_TIME, 30), duration: 1, state: 'Planned',
+          plan: { customer: 'Apex Refining', product: 'Diesel Max', from: 'C38' } },
+        { bay: 'Bay 6', eta: addHours(MOCK_CURRENT_TIME, 2.5), duration: 1, state: 'Planned',
+          plan: { customer: 'Coastal Energy Supply', product: 'Crude Oil', from: 'D05' } }, // Crude allowed on Bay 6
+
+        { bay: 'Bay 7', eta: subHours(MOCK_CURRENT_TIME, 2), duration: 1, state: 'Departed',
+          plan: { customer: 'Apex Refining', product: 'Diesel Max', from: 'C13' } },
+        { bay: 'Bay 7', eta: addHours(MOCK_CURRENT_TIME, 0.5), duration: 1, state: 'Planned',
+          plan: { customer: 'Coastal Energy Supply', product: 'Diesel Max', from: 'C13' } },
+        
+        { bay: 'Bay 8', eta: addHours(MOCK_CURRENT_TIME, 1), duration: 1, state: 'Planned',
+          plan: { customer: 'Apex Refining', product: 'Diesel Max', from: 'C13' } },
+        
+        // --- Bay 9-10: Chemicals ---
+        { bay: 'Bay 9', eta: addHours(MOCK_CURRENT_TIME, 2), duration: 1, state: 'Planned',
+          plan: { customer: 'GlobalChem Industries', product: 'Indu-Chem X7', from: 'E14' } },
+        { bay: 'Bay 10', eta: subHours(MOCK_CURRENT_TIME, 1.5), duration: 1, state: 'On Bay',
+          plan: { customer: 'GlobalChem Industries', product: 'Methanol', from: 'E15' } },
+        
+        // --- NEW TRUCKS FOR RESCHEDULE PANEL ---
+        { bay: 'Bay 5', eta: addHours(MOCK_CURRENT_TIME, 4.5), duration: 1, state: 'Planned', special: 'high-priority-reschedule',
+          plan: { customer: 'Coastal Energy Supply', product: 'Diesel Max', from: 'C13' } },
+        { bay: 'Bay 7', eta: subMinutes(MOCK_CURRENT_TIME, 45), duration: 1, state: 'Planned', special: 'no-show',
+          plan: { customer: 'Apex Refining', product: 'Diesel Max', from: 'C38' } }, 
     ];
     
-    let planIndex = 0;
     return ops.map((op, i) => {
-        const validPlansForBay = bayToValidPlans[op.bay];
-        if (!validPlansForBay || validPlansForBay.length === 0) return null;
-
-        const plan = validPlansForBay[planIndex % validPlansForBay.length];
-        planIndex++;
-
         const company = TRUCK_COMPANIES[i % TRUCK_COMPANIES.length];
         const companyAbbr = company.replace(/[^A-Z]/g, '').slice(0, 3);
 
@@ -192,18 +231,18 @@ const getHardcodedTruckOps = (): any[] => {
             transportId: company,
             licensePlate: `${companyAbbr}-${1000 + i}`,
             driverName: DRIVER_NAMES[i % DRIVER_NAMES.length],
-            plan: plan,
+            plan: op.plan,
             infra: op.bay,
             targetSofEvent: op.state,
             special: op.special
         };
-    }).filter(Boolean);
+    });
 };
 
 
 export const createMockOperations = (): Operation[] => {
     let operations: Operation[] = [];
-    const emptyTruckSof: SOFItem[] = SOF_EVENTS_MODALITY['truck'].map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 }));
+    const emptyTruckSof: SOFItem[] = LOCAL_TRUCK_SOF.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 }));
     
     // --- VESSEL OPERATIONS (3 Hardcoded Vessels, ALL ACTIVE) ---
 
@@ -231,7 +270,8 @@ export const createMockOperations = (): Operation[] => {
     const vessel1_new_statuses = deriveStatusFromSof(vessel1, true);
     if(vessel1_new_statuses) vessel1 = {...vessel1, ...vessel1_new_statuses};
 
-    // Vessel 2: "MV Titan" - Active, Wharf 2 (Pumping) - WITH 10 VALID TRANSFERS
+    // Vessel 2: "MV Titan" - Active, Wharf 2 (Pumping)
+    // Reduced volumes to prevent overfill
     const vessel2_eta = subHours(MOCK_CURRENT_TIME, 4);
     let vessel2: Operation = {
         id: 'op-vessel-2', terminal: 'PAL', modality: 'vessel', status: 'planned', transportId: 'MV Titan', eta: vessel2_eta.toISOString(), durationHours: 18, queuePriority: vessel2_eta.getTime(),
@@ -241,26 +281,21 @@ export const createMockOperations = (): Operation[] => {
         sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
         transferPlan: [
             { infrastructureId: 'L14', transfers: [
-                { id: 'op-vessel-2-L14-0', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '1P', to: 'J10', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [],
-                  preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })) // Incompatible with Agri-Oil Prime
-                },
-                { id: 'op-vessel-2-L14-1', customer: 'Terra Verde Agriculture', product: 'Agri-Oil Prime', from: '2P', to: 'B47', tonnes: 4000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
-                { id: 'op-vessel-2-L14-2', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '3P', to: 'J11', tonnes: 5000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [],
-                  preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })) // Incompatible with Agri-Oil Prime
-                }
+                { id: 'op-vessel-2-L14-0', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '1P', to: 'J10', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L14-2', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '3P', to: 'J11', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
             ]},
             { infrastructureId: 'L23', transfers: [
-                { id: 'op-vessel-2-L23-0', customer: 'Coastal Energy Supply', product: 'Diesel Max', from: '1S', to: 'C13', tonnes: 2500, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L23-0', customer: 'Coastal Energy Supply', product: 'Diesel Max', from: '1S', to: 'C13', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
                 { id: 'op-vessel-2-L23-1', customer: 'National Rail Freight', product: 'Diesel Max', from: '2S', to: 'C38', tonnes: 8000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
-                { id: 'op-vessel-2-L23-2', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '3S', to: 'D05', tonnes: 10000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
+                { id: 'op-vessel-2-L23-2', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '3S', to: 'D05', tonnes: 5000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
             ]},
             { infrastructureId: 'L24', transfers: [
                 { id: 'op-vessel-2-L24-0', customer: 'Apex Refining', product: 'Diesel Max', from: '4S', to: 'C38', tonnes: 5000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
             ]},
             { infrastructureId: 'L25', transfers: [
                 { id: 'op-vessel-2-L25-0', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '4P', to: 'J10', tonnes: 500, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
-                { id: 'op-vessel-2-L25-1', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '5P', to: 'J11', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
-                { id: 'op-vessel-2-L25-2', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '5S', to: 'D05', tonnes: 4000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
+                { id: 'op-vessel-2-L25-1', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '5P', to: 'J11', tonnes: 1000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-2-L25-2', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '5S', to: 'D05', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }
             ]},
         ],
         specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
@@ -286,10 +321,10 @@ export const createMockOperations = (): Operation[] => {
         sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
         transferPlan: [
             { infrastructureId: 'L34', transfers: [
-                { id: 'op-vessel-3-L34-0', customer: 'GlobalChem Industries', product: 'Methanol', from: '3P', to: 'E15', tonnes: 4000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-3-L34-0', customer: 'GlobalChem Industries', product: 'Methanol', from: '3P', to: 'E15', tonnes: 2000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }, // Reduced for safety
             ]},
             { infrastructureId: 'L31', transfers: [
-                { id: 'op-vessel-3-L31-0', customer: 'Apex Refining', product: 'ULP 98', from: '2S', to: 'A01', tonnes: 10000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] },
+                { id: 'op-vessel-3-L31-0', customer: 'Apex Refining', product: 'ULP 98', from: '2S', to: 'A01', tonnes: 6000, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferredTonnes: 0, slopsTransferredTonnes: 0, transferLog: [] }, // Safe fill limit adj
             ]},
         ],
         specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
@@ -301,16 +336,133 @@ export const createMockOperations = (): Operation[] => {
 
     operations.push(vessel1, vessel2, vessel3);
 
+    // --- NEW VESSEL 4: Cosco Galaxy - Hardcoded Extensive Plan (Optimized for Safety) ---
+    const vessel4_eta = addDays(MOCK_CURRENT_TIME, 7);
+    let vessel4: Operation = {
+        id: 'op-vessel-4',
+        terminal: 'PAL',
+        modality: 'vessel',
+        status: 'planned',
+        transportId: 'Cosco Galaxy',
+        eta: vessel4_eta.toISOString(),
+        durationHours: 36, // Extensive plan
+        queuePriority: vessel4_eta.getTime(),
+        currentStatus: 'Scheduled',
+        delay: { active: false },
+        orderNumber: 'ORD-54324',
+        activityHistory: [{ time: subHours(MOCK_CURRENT_TIME, 24).toISOString(), user: 'Planner', action: 'CREATE', details: 'New vessel operation plan created.' }],
+        documents: [],
+        sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
+        transferPlan: [
+            {
+                infrastructureId: 'L12',
+                transfers: [
+                    {
+                        id: 'op-v4-L12-1', customer: 'Apex Refining', product: 'Petro-Fuel 95', from: '1S', to: 'B46', tonnes: 8000,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    },
+                    {
+                        id: 'op-v4-L12-2', customer: 'Apex Refining', product: 'Diesel Max', from: '2S', to: 'C38', tonnes: 4000, // Changed to Diesel Max into C38 to avoid A01 overfill
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [],
+                        preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 }))
+                    },
+                    {
+                        id: 'op-v4-L12-3', customer: 'BulkTrans', product: 'Diesel Max', from: '3S', to: 'C13', tonnes: 4000,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [],
+                        preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 }))
+                    }
+                ]
+            },
+            {
+                infrastructureId: 'L13',
+                transfers: [
+                    {
+                        id: 'op-v4-L13-1', customer: 'Terra Verde Agriculture', product: 'Bio-Fuel E85', from: '1P', to: 'A02', tonnes: 5500,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    },
+                    {
+                        id: 'op-v4-L13-2', customer: 'National Rail Freight', product: 'Ethanol', from: '2P', to: 'A02', tonnes: 3000,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    }
+                ]
+            },
+            {
+                infrastructureId: 'L23',
+                transfers: [
+                    {
+                        id: 'op-v4-L23-1', customer: 'Coastal Energy Supply', product: 'Crude Oil', from: '3S', to: 'D05', tonnes: 5000, // Reduced to 5000 to avoid D05 overfill
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    },
+                    {
+                        id: 'op-v4-L23-2', customer: 'Coastal Energy Supply', product: 'Diesel Max', from: '4S', to: 'C38', tonnes: 5000,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [],
+                        preTransferCleaningSof: LINE_CLEANING_EVENTS.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 }))
+                    }
+                ]
+            },
+            {
+                infrastructureId: 'L24',
+                transfers: [
+                    {
+                        id: 'op-v4-L24-1', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '5P', to: 'J10', tonnes: 7000,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    },
+                    {
+                        id: 'op-v4-L24-2', customer: 'Aviation Fuels Inc', product: 'Jet A-1', from: '6P', to: 'J11', tonnes: 3000,
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    }
+                ]
+            },
+            {
+                infrastructureId: 'L31',
+                transfers: [
+                    {
+                        id: 'op-v4-L31-1', customer: 'GlobalChem Industries', product: 'Methanol', from: '7S', to: 'E15', tonnes: 1500, // Reduced to 1500 to avoid E15 overfill
+                        transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [],
+                        sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: []
+                    }
+                ]
+            }
+        ],
+        specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
+    };
+    operations.push(vessel4);
+
+    // --- NEW VESSEL 5: Anchorage (NOR Tendered) ---
+    const vessel5_eta = addHours(MOCK_CURRENT_TIME, 4);
+    let vessel5: Operation = {
+        id: 'op-vessel-5', terminal: 'PAL', modality: 'vessel', status: 'planned', transportId: 'Stolt Courage', eta: vessel5_eta.toISOString(), durationHours: 14, queuePriority: vessel5_eta.getTime(),
+        currentStatus: 'NOR Tendered', delay: { active: false }, orderNumber: 'ORD-54325',
+        activityHistory: [{ time: subHours(MOCK_CURRENT_TIME, 6).toISOString(), user: 'Planner', action: 'CREATE', details: 'New vessel operation plan created.' }, { time: subHours(MOCK_CURRENT_TIME, 1).toISOString(), user: 'Master', action: 'STATUS_UPDATE', details: 'Notice of Readiness Tendered.' }],
+        documents: [],
+        sof: VESSEL_COMMON_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })),
+        transferPlan: [
+            { infrastructureId: 'L34', transfers: [{ id: 'op-vessel-5-L34-0', customer: 'GlobalChem Industries', product: 'Indu-Chem X7', from: '2P', to: 'E14', tonnes: 3500, transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Vessel to Tank', specialServices: [], sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [] }] } // CHANGED TO L34 to reach E14
+        ],
+        specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
+    };
+    operations.push(vessel5);
+
+
     // --- RAIL OPERATION ---
     let railOp: Operation = {
         id: 'op-rail-1', terminal: 'PAL', modality: 'rail', status: 'planned', transportId: 'NRF 7891', eta: subHours(MOCK_CURRENT_TIME, 2).toISOString(), durationHours: 3, queuePriority: subHours(MOCK_CURRENT_TIME, 2).getTime(),
         currentStatus: 'Scheduled', orderNumber: 'RAIL-556',
         activityHistory: [{ time: subHours(MOCK_CURRENT_TIME, 3).toISOString(), user: 'Planner', action: 'CREATE', details: 'New rail operation plan created.' }],
-        transferPlan: [{ infrastructureId: 'Siding B', transfers: [{ id: 'op-rail-1-Siding B-0', customer: 'National Rail Freight', product: 'Diesel Max', from: 'C38', to: 'NRF 7891', tonnes: 1500, transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Tank to Rail', specialServices: [], sof: SOF_EVENTS_MODALITY['rail'].map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [] }] }],
+        transferPlan: [{ infrastructureId: 'Siding B', transfers: [{ id: 'op-rail-1-Siding B-0', customer: 'National Rail Freight', product: 'Diesel Max', from: 'C38', to: 'NRF 7891', tonnes: 1500, transferredTonnes: 0, slopsTransferredTonnes: 0, direction: 'Tank to Rail', specialServices: [], sof: LOCAL_RAIL_SOF.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })), transferLog: [] }] }],
         delay: { active: false }, specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [],
     };
     const railTransfer = railOp.transferPlan[0].transfers[0];
-    const { updatedSof: railSof, activityLogs: railLogs, lastTime: railPumpStartTime } = progressSofArray(railTransfer.sof!, SOF_EVENTS_MODALITY['rail'], 'Pumping Started', new Date(railOp.eta), 'Operator 1', 15, ` for ${railTransfer.product}`);
+    const { updatedSof: railSof, activityLogs: railLogs, lastTime: railPumpStartTime } = progressSofArray(railTransfer.sof!, LOCAL_RAIL_SOF, 'Pumping Started', new Date(railOp.eta), 'Operator 1', 15, ` for ${railTransfer.product}`);
     railTransfer.sof = railSof; railOp.activityHistory.push(...railLogs);
     const railInitialTransferred = Math.min(railTransfer.tonnes, ( (MOCK_CURRENT_TIME.getTime() - railPumpStartTime.getTime()) / 3600000) * 300);
     railTransfer.transferredTonnes = railInitialTransferred;
@@ -366,18 +518,37 @@ export const createMockOperations = (): Operation[] => {
             status: 'planned',
             currentStatus: 'Scheduled',
             truckStatus: 'Planned'
-        } as any; // Cast to allow building up the object
+        } as any;
         
         const etaDate = new Date(op.eta);
         const targetSofEvent = baseOp.targetSofEvent;
 
         if (targetSofEvent && targetSofEvent !== 'Planned') {
             const transfer = op.transferPlan[0].transfers[0];
-            const { updatedSof, activityLogs, lastTime } = progressSofArray(transfer.sof!, SOF_EVENTS_MODALITY.truck, targetSofEvent, etaDate, i % 2 === 0 ? 'Operator 1' : 'Dispatch');
+            
+            // Define simulated delays for this truck to ensure it matches the target timeline perfectly
+            // Specifically inserting the pumping duration into the gap
+            const pumpDurationMins = (baseOp.durationHours * 60) || 60;
+            const customDelays = {
+                'Pumping Stopped': pumpDurationMins, // Use full duration for the pump gap
+            };
+
+            // Generate sequential timestamps and logs
+            const { updatedSof, activityLogs, lastTime } = progressSofArray(
+                transfer.sof!, 
+                LOCAL_TRUCK_SOF, 
+                targetSofEvent, 
+                etaDate, 
+                i % 2 === 0 ? 'Operator 1' : 'Dispatch',
+                10, // Default step 10 mins for non-pumping steps
+                '',
+                customDelays
+            );
+            
             transfer.sof = updatedSof;
             op.activityHistory.push(...activityLogs);
 
-            // If arrived, complete the checklist for realism
+            // Auto-complete checklist for realism if arrived
             if (targetSofEvent !== 'Arrived' && targetSofEvent !== 'Planned') {
                 op.arrivalChecklist = {
                     tiresOk: 'complete', leaksOk: 'complete', hosesOk: 'complete', safetySealsOk: 'complete',
@@ -385,14 +556,19 @@ export const createMockOperations = (): Operation[] => {
                 };
             }
 
+            // Handle volume calculations based on state
             if (targetSofEvent === 'Pumping Started') {
-                const durationHours = (MOCK_CURRENT_TIME.getTime() - lastTime.getTime()) / 3600000;
-                let transferred = durationHours * 100; // Rate: 100 T/hr
-                
-                if (transferred >= transfer.tonnes) transferred = transfer.tonnes * 0.99; // Don't auto-complete
-                transfer.transferredTonnes = transferred;
+                // Determine how long since pumping started
+                const pumpStart = updatedSof.find((s: any) => s.event.includes('Pumping Started'))?.time;
+                if (pumpStart) {
+                    const durationHours = (MOCK_CURRENT_TIME.getTime() - new Date(pumpStart).getTime()) / 3600000;
+                    let transferred = durationHours * 100; // Assume Rate: 100 T/hr
+                    if (transferred >= transfer.tonnes) transferred = transfer.tonnes * 0.99; // Don't auto-complete volume if visually active
+                    transfer.transferredTonnes = transferred;
+                }
             } else if (['Pumping Stopped', 'Post-Load Weighing', 'Seal Applied', 'BOL Printed', 'Departed'].includes(targetSofEvent)) {
                 transfer.transferredTonnes = transfer.tonnes;
+                transfer.loadedWeight = transfer.tonnes * (1 + (Math.random() * 0.02 - 0.01)); // Small variance
             } else {
                 transfer.transferredTonnes = 0;
             }
@@ -438,6 +614,70 @@ export const createMockOperations = (): Operation[] => {
     });
 
     operations.push(...preloadedTrucks);
+
+    // --- DRAWDOWN OPERATIONS (To free up tank capacity for Cosco Galaxy) ---
+    // Helper to generate planned drawdowns
+    const generateDrawdowns = (baseId: string, tank: string, product: string, modality: 'truck' | 'rail', infra: string, count: number, tonnesPerOp: number, startDayOffset: number) => {
+        const ops: Operation[] = [];
+        const baseTime = new Date(MOCK_CURRENT_TIME);
+        const customer = 'Apex Refining'; // Simplified customer for drawdowns
+
+        for (let i = 0; i < count; i++) {
+            const opId = `${baseId}-${i}`;
+            // Spread over time
+            const timeOffset = (startDayOffset * 24 * 60) + (i * (24 * 60 / (count/5))); // Spread roughly over 5 days
+            const eta = addMinutes(baseTime, timeOffset);
+            
+            const op: Operation = {
+                id: opId,
+                terminal: 'PAL',
+                modality: modality,
+                status: 'planned',
+                transportId: modality === 'rail' ? `RAIL-${100+i}` : `TRK-${500+i}`,
+                eta: eta.toISOString(),
+                durationHours: modality === 'rail' ? 3 : 1,
+                queuePriority: eta.getTime(),
+                currentStatus: 'Scheduled',
+                truckStatus: 'Planned',
+                activityHistory: [{ time: MOCK_CURRENT_TIME.toISOString(), user: 'System', action: 'CREATE', details: 'Auto-generated drawdown.' }],
+                transferPlan: [{
+                    infrastructureId: infra,
+                    transfers: [{
+                        id: `t-${opId}`,
+                        customer,
+                        product,
+                        from: tank,
+                        to: modality === 'rail' ? `RAIL-${100+i}` : 'Generic Truck',
+                        tonnes: tonnesPerOp,
+                        direction: `Tank to ${modality.charAt(0).toUpperCase() + modality.slice(1)}`,
+                        specialServices: [],
+                        sof: modality === 'rail' ? 
+                            LOCAL_RAIL_SOF.map(e => ({ event: e, status: 'pending', time: '', user: '', loop: 1 })) : 
+                            JSON.parse(JSON.stringify(emptyTruckSof)),
+                        transferredTonnes: 0,
+                        slopsTransferredTonnes: 0,
+                        transferLog: []
+                    }]
+                }],
+                documents: [], specialRequirements: [], lineWalks: [], samples: [], heatingLog: [], slopLog: [], dilutionLog: [], batchLog: [], dipSheetData: [], sampleLog: [], pressureCheckLog: [], handOvers: [], hoseLog: [], observationLog: [], delay: {active:false}
+            };
+            ops.push(op);
+        }
+        return ops;
+    };
+
+    const drawdowns = [
+        // B46 Rail Drawdown (~7500T)
+        ...generateDrawdowns('dd-b46', 'B46', 'Petro-Fuel 95', 'rail', 'Siding A', 5, 1500, 1),
+        // C13 Truck Drawdown (~1000T)
+        ...generateDrawdowns('dd-c13', 'C13', 'Diesel Max', 'truck', 'Bay 5', 25, 40, 1),
+        // J10 Truck Drawdown (Jet A-1 ~4000T)
+        ...generateDrawdowns('dd-j10', 'J10', 'Jet A-1', 'truck', 'Bay 3', 80, 50, 1),
+        // A02 Truck Drawdown (~2000T)
+        ...generateDrawdowns('dd-a02', 'A02', 'Bio-Fuel E85', 'truck', 'Bay 2', 40, 50, 1)
+    ];
+
+    operations.push(...drawdowns);
 
     // Final cleanup to ensure all ops have required fields
     operations = operations.map((op, i) => ({

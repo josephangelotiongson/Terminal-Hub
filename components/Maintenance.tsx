@@ -56,9 +56,11 @@ const WorkOrderCard: React.FC<{
 
 const Maintenance: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <div>Loading...</div>;
+    
+    // Safe defaults
+    const holds = context?.holds || [];
+    const updateWorkOrderStatus = context?.updateWorkOrderStatus || (() => {});
 
-    const { holds, updateWorkOrderStatus } = context;
     const [selectedWO, setSelectedWO] = useState<Hold | null>(null);
     const [mobileActiveStage, setMobileActiveStage] = useState<WorkOrderStatus>('Requested');
 
@@ -78,6 +80,8 @@ const Maintenance: React.FC = () => {
         });
         return grouped;
     }, [maintenanceWorkOrders]);
+
+    if (!context) return <div>Loading...</div>;
 
     const handleStatusChange = (woId: string, newStatus: WorkOrderStatus) => {
         updateWorkOrderStatus(woId, newStatus);

@@ -1,5 +1,3 @@
-
-
 import React, { useContext, useMemo } from 'react';
 import Modal from './Modal';
 import { AppContext } from '../context/AppContext';
@@ -78,9 +76,11 @@ const TruckCard: React.FC<{
 
 const CallOffTruckModal: React.FC<CallOffTruckModalProps> = ({ isOpen, onClose, bayInfraId }) => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { operations, currentTerminalSettings, directTruckToBay } = context;
+    
+    // Safe defaults
+    const operations = context?.operations || [];
+    const currentTerminalSettings = context?.currentTerminalSettings || { infrastructureTankMapping: {} };
+    const directTruckToBay = context?.directTruckToBay || (() => {});
 
     const { plannedForBay, availableToCall, incompatibleOthers } = useMemo(() => {
         if (!bayInfraId) return { plannedForBay: [], availableToCall: [], incompatibleOthers: [] };
@@ -129,6 +129,7 @@ const CallOffTruckModal: React.FC<CallOffTruckModalProps> = ({ isOpen, onClose, 
         };
     }, [operations, bayInfraId, currentTerminalSettings]);
 
+    if (!context) return null;
 
     const handleSelect = (opId: string) => {
         if (bayInfraId) {

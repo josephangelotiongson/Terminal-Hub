@@ -14,7 +14,8 @@
     "react": "https://aistudiocdn.com/react@^19.2.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "types": "https://aistudiocdn.com/types@^0.1.1"
+    "types": "https://aistudiocdn.com/types@^0.1.1",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0"
   }
 }
 </script>
@@ -319,6 +320,8 @@
             overflow: hidden;
             pointer-events: none; /* Crucial for read-only */
             z-index: 16; /* In front of ops (10) and holds (14/15) */
+            display: flex;
+            align-items: center;
         }
         
         .hide-scrollbar::-webkit-scrollbar {

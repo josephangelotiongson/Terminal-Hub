@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useContext, useMemo } from 'react';
 import Modal from './Modal';
 import { Operation, Modality, Transfer, SpecialServiceData, TransferPlanItem } from '../types';
@@ -32,10 +31,9 @@ interface VesselTransferFormProps {
     transferData: any;
     onUpdate: (index: number, field: string, value: any) => void;
     onRemove: (index: number) => void;
-    onServiceChange: (index: number, serviceName: string, isChecked: boolean) => void;
 }
 
-const VesselTransferForm: React.FC<VesselTransferFormProps> = ({ index, transferData, onUpdate, onRemove, onServiceChange }) => {
+const VesselTransferForm: React.FC<VesselTransferFormProps> = ({ index, transferData, onUpdate, onRemove }) => {
     const { currentTerminalSettings, settings } = useContext(AppContext)!;
 
     const { availableProducts, availableInfra, availableTanks } = useMemo(() => {
@@ -60,12 +58,6 @@ const VesselTransferForm: React.FC<VesselTransferFormProps> = ({ index, transfer
         return { availableProducts: prods, availableInfra: infra, availableTanks: tanks };
     }, [transferData.customer, transferData.product, transferData.infrastructureId, currentTerminalSettings]);
 
-    const availableTransferServices = useMemo(() => {
-        const modServices = settings.modalityServices?.vessel || [];
-        const prodServices = settings.productServices || [];
-        return [...new Set([...modServices, ...prodServices])].sort();
-    }, [settings]);
-
     return (
         <div className="p-4 border rounded-lg bg-slate-50 relative">
             <h4 className="font-bold mb-2">Transfer #{index + 1}</h4>
@@ -78,25 +70,6 @@ const VesselTransferForm: React.FC<VesselTransferFormProps> = ({ index, transfer
                 <div><label>Direction</label><select value={transferData.direction} onChange={e => onUpdate(index, 'direction', e.target.value)}>{MODALITY_DIRECTIONS.vessel.map(d => <option key={d} value={d}>{d}</option>)}</select></div>
                 <div><label>Infrastructure</label><select value={transferData.infrastructureId} onChange={e => onUpdate(index, 'infrastructureId', e.target.value)} disabled={!transferData.product}><option value="">Select...</option>{availableInfra.map(i => <option key={i} value={i}>{formatInfraName(i)}</option>)}</select></div>
                 <div><label>Tank</label><select value={transferData.tank} onChange={e => onUpdate(index, 'tank', e.target.value)} disabled={!transferData.infrastructureId}><option value="">Select...</option>{availableTanks.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-            </div>
-            <div className="mt-4 pt-4 border-t">
-                <h5 className="font-semibold text-text-secondary text-sm mb-2">Transfer Services</h5>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {availableTransferServices.map(service => {
-                        const isChecked = (transferData.specialServices || []).some((s: SpecialServiceData) => s.name === service);
-                        return (
-                            <label key={service} className="flex items-center space-x-2 p-1 rounded-md hover:bg-gray-50 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
-                                    checked={isChecked}
-                                    onChange={(e) => onServiceChange(index, service, e.target.checked)}
-                                />
-                                <span className="text-xs font-medium text-gray-700">{service}</span>
-                            </label>
-                        );
-                    })}
-                </div>
             </div>
         </div>
     );
@@ -128,7 +101,6 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
     const [vesselTransportId, setVesselTransportId] = useState('');
     const [vesselEta, setVesselEta] = useState('');
     const [vesselDuration, setVesselDuration] = useState(12);
-    const [vesselRequirements, setVesselRequirements] = useState<string[]>([]);
     const [transfers, setTransfers] = useState<any[]>([]);
 
     const availableTanks = useMemo(() => {
@@ -169,7 +141,6 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
         if (newModality === 'vessel') {
             setVesselDuration(12);
             setTransfers([{ customer: 'Apex Refining', product: '', tonnes: 0, direction: MODALITY_DIRECTIONS.vessel[0], infrastructureId: '', tank: '', specialServices: [] }]);
-            setVesselRequirements([]);
         } else {
             setTruckRailDuration(getDefaultDuration(newModality));
             setSimpleTransfer({ customer: '', product: '', tonnes: 0, direction: MODALITY_DIRECTIONS[newModality][0], specialServices: [] });
@@ -188,7 +159,7 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
                     id: `transfer-${Date.now()}-${Math.random()}`, customer: t.customer, product: t.product, tonnes: t.tonnes, direction: t.direction,
                     from: t.direction === 'Tank to Vessel' ? t.tank : vesselTransportId,
                     to: t.direction === 'Vessel to Tank' ? t.tank : vesselTransportId,
-                    specialServices: t.specialServices || [], transferredTonnes: 0, slopsTransferredTonnes: 0,
+                    specialServices: [], transferredTonnes: 0, slopsTransferredTonnes: 0,
                     sof: VESSEL_COMMODITY_EVENTS.map(event => ({ event, status: 'pending', time: '', user: '', loop: 1 }))
                 };
                 let line = acc.find(l => l.infrastructureId === t.infrastructureId);
@@ -203,7 +174,7 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
             createNewOperation({
                 modality, transportId: vesselTransportId, eta: vesselEta, durationHours: vesselDuration,
                 transferPlan,
-                specialRequirements: vesselRequirements.map(name => ({ name, data: {} }))
+                specialRequirements: []
             });
 
         } else {
@@ -216,7 +187,7 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
                 licensePlate, driverName, 
                 transfer: {
                     ...simpleTransfer,
-                    specialServices: simpleTransfer.specialServices || [], // Ensure it's passed
+                    specialServices: [], 
                 },
                 transferPlan: [{ infrastructureId, transfers: [] }]
             });
@@ -237,23 +208,6 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
         return newTransfers;
     });
     
-    const handleVesselTransferServiceChange = (transferIndex: number, serviceName: string, isChecked: boolean) => {
-        setTransfers(prevTransfers => {
-            const newTransfers = JSON.parse(JSON.stringify(prevTransfers));
-            const transfer = newTransfers[transferIndex];
-            const currentServices = transfer.specialServices || [];
-
-            if (isChecked) {
-                if (!currentServices.some((s: SpecialServiceData) => s.name === serviceName)) {
-                    transfer.specialServices = [...currentServices, { name: serviceName, data: {} }];
-                }
-            } else {
-                transfer.specialServices = currentServices.filter((s: SpecialServiceData) => s.name !== serviceName);
-            }
-            return newTransfers;
-        });
-    };
-
     const handleSimpleTransferChange = (field: keyof Transfer, value: any) => {
         setSimpleTransfer(prev => {
             const newTransfer = { ...prev, [field]: value };
@@ -299,30 +253,6 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
         );
     }, [modality, vesselTransportId, transfers, truckRailTransportId, simpleTransfer, infrastructureId]);
 
-    const availableModalityServices = useMemo(() => {
-        if (modality === 'vessel') return []; // Handled separately
-        const modServices = settings.modalityServices?.[modality] || [];
-        const prodServices = settings.productServices || [];
-        return [...new Set([...modServices, ...prodServices])].sort();
-    }, [settings, modality]);
-
-    const handleSimpleServiceChange = (serviceName: string, isChecked: boolean) => {
-        setSimpleTransfer(prev => {
-            const currentServices = prev.specialServices || [];
-            let newServices: SpecialServiceData[];
-            if (isChecked) {
-                if (!currentServices.some(s => s.name === serviceName)) {
-                    newServices = [...currentServices, { name: serviceName, data: { status: 'pending' } }];
-                } else {
-                    newServices = currentServices;
-                }
-            } else {
-                newServices = currentServices.filter(s => s.name !== serviceName);
-            }
-            return { ...prev, specialServices: newServices };
-        });
-    };
-
     return (
         <Modal isOpen={isOpen} onClose={onClose} title={`Create New ${modality} Order`} footer={<><button onClick={onClose} className="btn-secondary">Cancel</button><button onClick={handleCreate} disabled={!isFormValid} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">Create Order</button></>}>
             <div className="space-y-6">
@@ -337,14 +267,8 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
                         </div>
                             <div className="space-y-3">
                             <h3 className="font-semibold text-lg">Transfers</h3>
-                            {transfers.map((t, i) => <VesselTransferForm key={i} index={i} transferData={t} onUpdate={handleUpdateTransfer} onRemove={handleRemoveTransfer} onServiceChange={handleVesselTransferServiceChange} />)}
+                            {transfers.map((t, i) => <VesselTransferForm key={i} index={i} transferData={t} onUpdate={handleUpdateTransfer} onRemove={handleRemoveTransfer} />)}
                             <button onClick={handleAddTransfer} className="btn-secondary w-full"><i className="fas fa-plus mr-2"></i>Add Transfer</button>
-                        </div>
-                        <div>
-                            <h3 className="font-semibold text-lg">Vessel Services</h3>
-                            <div className="flex flex-wrap gap-x-6 gap-y-2 mt-2">
-                                {(settings.vesselServices || []).map(service => <label key={service} className="flex items-center space-x-2"><input type="checkbox" className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary" checked={vesselRequirements.includes(service)} onChange={e => setVesselRequirements(p => e.target.checked ? [...p, service] : p.filter(s => s !== service))} /><span>{service}</span></label>)}
-                            </div>
                         </div>
                     </div>
                 ) : ( // Truck or Rail Form
@@ -395,26 +319,6 @@ const NewOperationModal: React.FC<NewOperationModalProps> = ({ isOpen, onClose }
                                         {availableTanks.length === 0 && simpleTransfer.product && <p className="text-xs text-red-500 mt-1">No tanks available for this product/bay combination.</p>}
                                     </div>
                                 )}
-                            </div>
-                        </div>
-                        <div className="p-4 border-t">
-                            <h4 className="font-semibold text-lg mb-2">Services</h4>
-                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                                {availableModalityServices.map(service => {
-                                    const isChecked = (simpleTransfer.specialServices || []).some(s => s.name === service);
-                                    return (
-                                        <label key={service} className="flex items-center space-x-2 p-1 rounded-md hover:bg-slate-50 cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
-                                                checked={isChecked}
-                                                onChange={(e) => handleSimpleServiceChange(service, e.target.checked)}
-                                            />
-                                            <span className="text-sm font-medium text-gray-700">{service}</span>
-                                        </label>
-                                    );
-                                })}
-                                {availableModalityServices.length === 0 && <p className="text-xs text-slate-400 italic">No services available for this modality.</p>}
                             </div>
                         </div>
                     </div>

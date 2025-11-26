@@ -1,11 +1,4 @@
 
-/**
- * NOTE TO MAINTAINER & AI:
- * This service *did* simulate a SCADA/historian database. The data generation
- * has been turned off by user request to prevent high localStorage usage in the demo.
- * To re-enable, the original `generateRealisticData` function and its usage within
- * `loadHistorianData` would need to be restored.
- */
 import { Operation, TerminalSettings, HistorianData } from '../types';
 
 export const historianService = {

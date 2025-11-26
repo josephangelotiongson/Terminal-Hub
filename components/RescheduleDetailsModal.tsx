@@ -16,17 +16,60 @@ interface RescheduleDetailsModalProps {
 
 const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen, onClose, operation, viewDate }) => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { operations, holds, currentTerminalSettings, setOperations, addActivityLog, rescheduleModalData, currentUser, simulatedTime, startPlacementMode, settings } = context;
+    
+    // Safe defaults for unconditional execution
+    const operations = context?.operations || [];
+    const holds = context?.holds || [];
+    const currentTerminalSettings = context?.currentTerminalSettings || { infrastructureModalityMapping: {}, customerMatrix: {}, infrastructureTankMapping: {} } as any;
+    const setOperations = context?.setOperations || (() => {});
+    const addActivityLog = context?.addActivityLog || (() => {});
+    const rescheduleModalData = context?.rescheduleModalData || { source: undefined };
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' };
+    const simulatedTime = context?.simulatedTime || MOCK_CURRENT_TIME;
+    const startPlacementMode = context?.startPlacementMode || (() => {});
+    const settings = context?.settings || {} as any;
+    const switchView = context?.switchView || (() => {});
 
     const [customDetails, setCustomDetails] = useState<any>({});
     const [newTime, setNewTime] = useState('');
     const [newResource, setNewResource] = useState('');
     const canSave = canReschedule(currentUser);
 
-    const validTruckInfra = useMemo(() => Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
-        .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === 'truck'), [currentTerminalSettings]);
+    const validTruckInfra = useMemo(() => {
+        if (!operation || operation.modality !== 'truck') {
+            return [];
+        }
+
+        const transfer = operation.transferPlan?.[0]?.transfers?.[0];
+        const allTruckBays = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
+            .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === 'truck');
+
+        if (!transfer?.customer || !transfer.product) {
+            // Fallback: return all truck bays if product/customer info is missing
+            return allTruckBays;
+        }
+
+        const { customer, product } = transfer;
+
+        // 1. Find tanks allowed for this customer/product combination
+        const allowedTanksForProduct = new Set(
+            (currentTerminalSettings.customerMatrix || [])
+                .find(m => m.customer === customer && m.product === product)?.tanks || []
+        );
+
+        if (allowedTanksForProduct.size === 0) {
+            return []; // No tanks configured for this product, so no bays are valid.
+        }
+        
+        // 2. Filter bays to only those connected to an allowed tank
+        const compatibleBays = allTruckBays.filter(bayId => {
+            const connectedTanks = currentTerminalSettings.infrastructureTankMapping?.[bayId] || [];
+            return connectedTanks.some(tank => allowedTanksForProduct.has(tank));
+        });
+
+        return compatibleBays;
+
+    }, [operation, currentTerminalSettings]);
 
     const { reason, details } = useMemo(() => {
         if (!isOpen) return { reason: '', details: {} };
@@ -95,6 +138,11 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
     }, [isOpen, details]);
 
     const handleSave = () => {
+        if (!canSave) {
+            alert("Permission Denied: You cannot reschedule operations.");
+            return;
+        }
+
         if (!newTime || !newResource) {
             alert('Please select a new time and resource to reschedule.');
             return;
@@ -107,6 +155,43 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
             return;
         }
         
+        const opDurationHours = getOperationDurationHours(operation);
+        const opStart = finalTime.getTime();
+        const opEnd = opStart + opDurationHours * 3600 * 1000;
+
+        // Check for conflicts with other operations
+        const conflictingOp = operations.find(op => {
+            if (op.id === operation.id || op.status === 'cancelled') return false;
+            
+            const opResource = op.transferPlan?.[0]?.infrastructureId;
+            if (opResource !== newResource) return false;
+
+            const otherOpStart = new Date(op.eta).getTime();
+            const otherOpEnd = otherOpStart + getOperationDurationHours(op) * 3600 * 1000;
+
+            return opStart < otherOpEnd && opEnd > otherOpStart;
+        });
+
+        if (conflictingOp) {
+            alert(`Conflict detected! The selected time slot overlaps with operation ${conflictingOp.transportId} (${conflictingOp.licensePlate}). Please choose a different time or resource.`);
+            return;
+        }
+
+        // Check for conflicts with holds
+        const conflictingHold = holds.find(hold => {
+            if (hold.resource !== newResource || hold.status !== 'approved' || hold.workOrderStatus === 'Closed') return false;
+
+            const holdStart = new Date(hold.startTime).getTime();
+            const holdEnd = new Date(hold.endTime).getTime();
+
+            return opStart < holdEnd && opEnd > holdStart;
+        });
+
+        if (conflictingHold) {
+            alert(`Conflict detected! The selected time slot overlaps with a hold for "${conflictingHold.reason}". Please choose a different time or resource.`);
+            return;
+        }
+
         setOperations(prevOps => prevOps.map(op => {
             if (op.id === operation.id) {
                 const updatedOp = JSON.parse(JSON.stringify(op)) as Operation;
@@ -136,8 +221,9 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
     };
 
     const handleSelectOnBoard = () => {
-        startPlacementMode(operation.id);
         onClose();
+        switchView('planning');
+        startPlacementMode(operation.id);
     };
 
     const renderReasonFields = () => {
@@ -191,7 +277,7 @@ const RescheduleDetailsModal: React.FC<RescheduleDetailsModalProps> = ({ isOpen,
         }
     };
 
-    if (!isOpen) return null;
+    if (!context || !isOpen) return null;
 
     return (
         <Modal

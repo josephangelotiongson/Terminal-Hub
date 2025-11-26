@@ -5,14 +5,15 @@ import ConfirmModal from './ConfirmModal';
 
 const UserPermissions: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { currentUser, users, delegateRole, revokeDelegation } = context;
-
+    
     const [actionState, setActionState] = useState<{
         action: 'delegate' | 'revoke';
         user: User;
     } | null>(null);
+
+    if (!context) return null;
+
+    const { currentUser, users, delegateRole, revokeDelegation } = context;
 
     if (currentUser.role !== 'Operations Lead') {
         return (

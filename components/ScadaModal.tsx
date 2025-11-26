@@ -33,10 +33,11 @@ const Sparkline: React.FC<{ data: HistorianDataPoint[], width: number, height: n
 
 const ScadaModal: React.FC = () => {
     const context = useContext(AppContext);
+    const [isCollapsed, setIsCollapsed] = useState(true);
+
     if (!context) return null;
 
     const { scadaData, operations, switchView, getHistoryForAsset } = context;
-    const [isCollapsed, setIsCollapsed] = useState(true);
 
     const activeInfraIds = Object.keys(scadaData).filter(id => scadaData[id].pumpStatus === 'ON');
 

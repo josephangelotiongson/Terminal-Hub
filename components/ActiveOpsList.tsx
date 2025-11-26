@@ -4,6 +4,7 @@ import { AppContext } from '../context/AppContext';
 import { Operation, Modality, ScadaData } from '../types';
 import { calculateOperationValue, formatCurrency, formatInfraName, naturalSort, getOperationBorderColorClass, createDocklineToWharfMap, calculateOperationProgress, getActiveTransfers, canDispatchTrucks, canClearBay } from '../utils/helpers';
 import CallOffTruckModal from './CallOffTruckModal';
+import ElapsedTimeBadge from './ElapsedTimeBadge';
 
 // This helper determines if an active operation is physically at its designated asset.
 const isAtAsset = (op: Operation): boolean => {
@@ -14,8 +15,8 @@ const isAtAsset = (op: Operation): boolean => {
     if (op.modality === 'truck') {
         // A truck is considered physically occupying the bay asset if it is directed there, on the bay, or loading.
         // Post-loading activities like weighing and paperwork mean the bay can be cleared for the next op.
-        const atAssetStatuses = ['Directed to Bay', 'On Bay', 'Loading'];
-        return atAssetStatuses.includes(op.truckStatus || '');
+        const atAssetStatuses = ['Directed to Bay', 'On Bay', 'Loading', 'Completing', 'Weighing', 'Sealing', 'Paperwork'];
+        return atAssetStatuses.includes(op.truckStatus || '') || atAssetStatuses.includes(op.currentStatus);
     }
     if (op.modality === 'vessel') {
         // For vessels, being "alongside" means they are at the asset (dock).
@@ -69,7 +70,14 @@ const ProgressIcon: React.FC<{ modality: Modality; percentage: number }> = ({ mo
 
 // A small card to show details of an active operation on an asset.
 const OperationCard: React.FC<{ operation: Operation, scadaData: ScadaData, infraId: string }> = ({ operation, scadaData, infraId }) => {
-    const { switchView, settings, currentUser, revertCallOff } = useContext(AppContext)!;
+    const context = useContext(AppContext);
+    
+    // Safe defaults for unconditional hook execution
+    const settings = context?.settings || { contracts: { serviceRates: {}, customerRates: {} } } as any;
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' } as any;
+    const switchView = context?.switchView || (() => {});
+    const revertCallOff = context?.revertCallOff || (() => {});
+
     const isCommercials = currentUser.role === 'Commercials';
     const canRevert = canDispatchTrucks(currentUser);
     const borderColorClass = getOperationBorderColorClass(operation);
@@ -109,71 +117,116 @@ const OperationCard: React.FC<{ operation: Operation, scadaData: ScadaData, infr
     
     const infraScada = scadaData[infraId];
     const isPumpingOnInfra = infraScada?.pumpStatus === 'ON';
+    
+    // --- ATTENTION LOGIC ---
+    const isAssignedToUser = useMemo(() => {
+        return (currentUser.assignedAreas || []).includes(infraId);
+    }, [currentUser, infraId]);
+
+    const attentionRequired = useMemo(() => {
+        if (!isAssignedToUser) return false;
+        // Examples of states needing operator attention:
+        // - "On Bay" means truck has arrived at bay, needs hose connection.
+        // - "Pumping Stopped" means pumping is done, needs disconnection.
+        const ATTENTION_STATES = ['On Bay', 'Pumping Stopped'];
+        return ATTENTION_STATES.includes(operation.currentStatus) || ATTENTION_STATES.includes(operation.truckStatus || '');
+    }, [isAssignedToUser, operation.currentStatus, operation.truckStatus]);
+
+    // --- TIME AT BAY LOGIC ---
+    const timeAtBay = useMemo(() => {
+        if (operation.modality !== 'truck') return null;
+        const transfer = operation.transferPlan?.[0]?.transfers?.[0];
+        const onBayEvent = (transfer?.sof || []).find(s => s.event.includes('On Bay') && s.status === 'complete');
+        return onBayEvent ? onBayEvent.time : null;
+    }, [operation]);
+
+    if (!context) return null;
 
     return (
         <div 
             onClick={() => switchView('operation-details', operation.id)}
-            className={`card p-4 sm:p-5 h-full flex items-center cursor-pointer hover:shadow-lg border-l-4 ${borderColorClass}`}
+            className={`card relative h-full flex flex-col cursor-pointer hover:shadow-lg transition-all ${attentionRequired ? 'ring-4 ring-orange-400 shadow-xl scale-[1.02] z-10' : `border-l-4 ${borderColorClass}`}`}
         >
-            <ProgressIcon modality={operation.modality} percentage={visualPercentage} />
-            <div className="flex-grow min-w-0 ml-4 sm:ml-5">
-                <div className="flex justify-between items-start gap-2">
-                    <div className="flex-grow min-w-0">
-                        {operation.modality === 'truck' ? (
-                            <>
-                                <h4 className="font-mono font-black text-3xl tracking-wider text-brand-dark truncate leading-none" title={operation.licensePlate}>{operation.licensePlate}</h4>
-                                <p className="font-bold text-base text-text-secondary truncate">{operation.transportId}</p>
-                            </>
-                        ) : (
-                            <h4 className="font-bold text-xl text-brand-dark truncate">{operation.transportId}</h4>
+            {attentionRequired && (
+                <div className="absolute -top-3 left-0 right-0 flex justify-center z-20">
+                     <span className="bg-orange-500 text-white text-xs font-bold px-3 py-1 rounded-full shadow-sm animate-bounce">
+                        YOUR ACTION REQUIRED
+                    </span>
+                </div>
+            )}
+            
+            <div className={`p-4 sm:p-5 flex-grow flex items-center ${attentionRequired ? 'bg-orange-50' : ''}`}>
+                <ProgressIcon modality={operation.modality} percentage={visualPercentage} />
+                <div className="flex-grow min-w-0 ml-4 sm:ml-5">
+                    <div className="flex justify-between items-start gap-2">
+                        <div className="flex-grow min-w-0">
+                            {operation.modality === 'truck' ? (
+                                <>
+                                    <h4 className="font-mono font-black text-3xl tracking-wider text-brand-dark truncate leading-none" title={operation.licensePlate}>{operation.licensePlate}</h4>
+                                    <p className="font-bold text-base text-text-secondary truncate">{operation.transportId}</p>
+                                </>
+                            ) : (
+                                <h4 className="font-bold text-xl text-brand-dark truncate">{operation.transportId}</h4>
+                            )}
+                        </div>
+                        {isCommercials && (
+                            <span className="text-xs font-bold bg-green-100 text-green-800 px-2 py-0.5 rounded-full flex-shrink-0">
+                                {formatCurrency(totalValue)}
+                            </span>
                         )}
                     </div>
-                    {isCommercials && (
-                        <span className="text-xs font-bold bg-green-100 text-green-800 px-2 py-0.5 rounded-full flex-shrink-0">
-                            {formatCurrency(totalValue)}
-                        </span>
+                    
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                         {timeAtBay && (
+                            <ElapsedTimeBadge 
+                                startTime={timeAtBay} 
+                                className="!bg-indigo-100 !text-indigo-800" 
+                                prefix="At Bay: " 
+                            />
+                        )}
+                        {isPumpingOnInfra && (
+                            <div className="text-sm font-bold text-green-600 flex items-center animate-pulse flex-shrink-0" title="Live Flow Rate">
+                                <i className="fas fa-exchange-alt mr-1"></i>
+                                <span>{infraScada.flowRate.toFixed(0)} T/hr</span>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="mt-2 grid grid-cols-[auto,1fr] gap-x-2 gap-y-1.5 text-sm">
+                        {operation.modality === 'truck' && operation.driverName && (
+                            <>
+                                <div className="text-text-secondary font-semibold">Driver:</div>
+                                <div className="text-text-primary truncate">{operation.driverName}</div>
+                            </>
+                        )}
+                        <div className="text-text-secondary font-semibold">Customer:</div>
+                        <div className="text-text-primary truncate">{displayTransfer?.customer}</div>
+
+                        <div className="text-text-secondary font-semibold">Product:</div>
+                        <div className="text-text-primary truncate">{displayTransfer?.product}</div>
+
+                        <div className="text-text-secondary font-semibold">Lineup:</div>
+                        <div className="text-text-primary truncate">{displayTransfer?.from} &rarr; {displayTransfer?.to}</div>
+
+                        <div className="text-text-secondary font-semibold">Volume:</div>
+                        <div className="text-text-primary truncate">{`${completed.toFixed(0)} / ${total.toLocaleString()} T`}</div>
+                    </div>
+                    {operation.modality === 'truck' && operation.truckStatus === 'Directed to Bay' && (
+                        <div className="mt-2 text-right">
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    revertCallOff(operation.id);
+                                }}
+                                className="btn-secondary !text-sm !py-1 !px-3 !bg-yellow-100 !border-yellow-300 !text-yellow-800 hover:!bg-yellow-200 disabled:!bg-slate-100 disabled:!text-slate-400 disabled:!border-slate-300 disabled:cursor-not-allowed"
+                                disabled={!canRevert}
+                                title={!canRevert ? "Permission Denied" : "Revert Call"}
+                            >
+                                <i className="fas fa-undo mr-1"></i>Revert Call
+                            </button>
+                        </div>
                     )}
                 </div>
-                {isPumpingOnInfra && (
-                    <div className="text-sm font-bold text-green-600 flex items-center animate-pulse flex-shrink-0 mt-1" title="Live Flow Rate">
-                        <i className="fas fa-exchange-alt mr-1"></i>
-                        <span>{infraScada.flowRate.toFixed(0)} T/hr</span>
-                    </div>
-                )}
-                <div className="mt-2 grid grid-cols-[auto,1fr] gap-x-2 gap-y-1.5 text-sm">
-                    {operation.modality === 'truck' && operation.driverName && (
-                        <>
-                            <div className="text-text-secondary font-semibold">Driver:</div>
-                            <div className="text-text-primary truncate">{operation.driverName}</div>
-                        </>
-                    )}
-                    <div className="text-text-secondary font-semibold">Customer:</div>
-                    <div className="text-text-primary truncate">{displayTransfer?.customer}</div>
-
-                    <div className="text-text-secondary font-semibold">Product:</div>
-                    <div className="text-text-primary truncate">{displayTransfer?.product}</div>
-
-                    <div className="text-text-secondary font-semibold">Lineup:</div>
-                    <div className="text-text-primary truncate">{displayTransfer?.from} &rarr; {displayTransfer?.to}</div>
-
-                    <div className="text-text-secondary font-semibold">Volume:</div>
-                    <div className="text-text-primary truncate">{`${completed.toFixed(0)} / ${total.toLocaleString()} T`}</div>
-                </div>
-                 {operation.modality === 'truck' && operation.truckStatus === 'Directed to Bay' && (
-                    <div className="mt-2 text-right">
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                revertCallOff(operation.id);
-                            }}
-                            className="btn-secondary !text-sm !py-1 !px-3 !bg-yellow-100 !border-yellow-300 !text-yellow-800 hover:!bg-yellow-200 disabled:!bg-slate-100 disabled:!text-slate-400 disabled:!border-slate-300 disabled:cursor-not-allowed"
-                            disabled={!canRevert}
-                            title={!canRevert ? "Permission Denied" : "Revert Call"}
-                        >
-                            <i className="fas fa-undo mr-1"></i>Revert Call
-                        </button>
-                    </div>
-                )}
             </div>
         </div>
     );
@@ -223,20 +276,25 @@ const CompletedCard: React.FC<{ op: Operation; onClear: () => void; canClear: bo
 
 const ActiveOpsList: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <p>Loading...</p>;
-
-    const { operations, selectedTerminal, workspaceFilter, workspaceSearchTerm, currentTerminalSettings, visibleInfrastructure, currentUser, scadaData, revertCallOff, lastCompletedOpByInfra, clearBayForNextOp, getOperationById } = context;
     
+    // Safe defaults for hooks
+    const operations = context?.operations || [];
+    const selectedTerminal = context?.selectedTerminal || '';
+    const workspaceFilter = context?.workspaceFilter || 'truck';
+    const workspaceSearchTerm = context?.workspaceSearchTerm || '';
+    const currentTerminalSettings = context?.currentTerminalSettings || { infrastructureModalityMapping: {} };
+    const visibleInfrastructure = context?.visibleInfrastructure || [];
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' };
+    const scadaData = context?.scadaData || {};
+    const lastCompletedOpByInfra = context?.lastCompletedOpByInfra || {};
+    const clearBayForNextOp = context?.clearBayForNextOp || (() => {});
+    const getOperationById = context?.getOperationById || (() => undefined);
+
     const [isCallOffModalOpen, setIsCallOffModalOpen] = useState(false);
     const [selectedBay, setSelectedBay] = useState<string | null>(null);
 
     const canDispatch = canDispatchTrucks(currentUser);
     const canClear = canClearBay(currentUser);
-
-    const handleAvailableClick = (infraId: string) => {
-        setSelectedBay(infraId);
-        setIsCallOffModalOpen(true);
-    };
 
     const { vesselAssets, truckAssets, railAssets } = useMemo(() => {
         const infraMap = currentTerminalSettings.infrastructureModalityMapping || {};
@@ -323,6 +381,12 @@ const ActiveOpsList: React.FC = () => {
 
     }, [operations, selectedTerminal, workspaceFilter, workspaceSearchTerm, currentTerminalSettings, visibleInfrastructure]);
 
+    if (!context) return <p>Loading...</p>;
+
+    const handleAvailableClick = (infraId: string) => {
+        setSelectedBay(infraId);
+        setIsCallOffModalOpen(true);
+    };
 
     return (
         <>

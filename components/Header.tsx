@@ -1,6 +1,4 @@
 
-
-
 import React, { useContext, useState, useRef, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import WorkspaceSearch from './WorkspaceSearch';
@@ -9,21 +7,32 @@ import { formatInfraName, naturalSort, createDocklineToWharfMap, canCreateOperat
 
 const Header: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { 
-        online, selectedTerminal, getOperationById, activeOpId, currentView, 
-        setIsSidebarOpen, workspaceSearchTerm, setWorkspaceSearchTerm,
-        activeLineIndex, activeTransferIndex,
-        viewHistory, goBack,
-        workspaceFilter, setWorkspaceFilter,
-        visibleInfrastructure, updateColumnVisibility,
-        currentTerminalSettings,
-        openNewOpModal,
-        isTimePlaying, setIsTimePlaying, simulatedTime,
-        currentUser
-    } = context;
     
+    // Safe defaults for hooks dependencies to ensure hooks can run even if context is null
+    const online = context?.online ?? false;
+    const selectedTerminal = context?.selectedTerminal || '';
+    const getOperationById = context?.getOperationById || (() => undefined);
+    const activeOpId = context?.activeOpId || null;
+    const currentView = context?.currentView || 'dashboard';
+    const setIsSidebarOpen = context?.setIsSidebarOpen || (() => {});
+    const workspaceSearchTerm = context?.workspaceSearchTerm || '';
+    const setWorkspaceSearchTerm = context?.setWorkspaceSearchTerm || (() => {});
+    const activeLineIndex = context?.activeLineIndex || null;
+    const activeTransferIndex = context?.activeTransferIndex || null;
+    const viewHistory = context?.viewHistory || [];
+    const goBack = context?.goBack || (() => {});
+    const workspaceFilter = context?.workspaceFilter || 'all';
+    const setWorkspaceFilter = context?.setWorkspaceFilter || (() => {});
+    const visibleInfrastructure = context?.visibleInfrastructure || [];
+    const updateColumnVisibility = context?.updateColumnVisibility || (() => {});
+    const currentTerminalSettings = context?.currentTerminalSettings || { infrastructureModalityMapping: {} };
+    const openNewOpModal = context?.openNewOpModal || (() => {});
+    const isTimePlaying = context?.isTimePlaying || false;
+    const setIsTimePlaying = context?.setIsTimePlaying || (() => {});
+    const simulatedTime = context?.simulatedTime || new Date();
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' };
+
+    // HOOKS MUST RUN UNCONDITIONALLY
     const [isInfraFilterOpen, setIsInfraFilterOpen] = useState(false);
     const infraFilterRef = useRef<HTMLDivElement>(null);
 
@@ -56,6 +65,9 @@ const Header: React.FC = () => {
         return { filteredInfrastructure: modalityFiltered, docklineToWharfMap: wharfMap };
     }, [workspaceFilter, currentTerminalSettings]);
 
+    // GUARD CLAUSE: STRICTLY AFTER ALL HOOKS
+    if (!context) return null;
+
     const handleInfraVisibilityChange = (infraId: string, isChecked: boolean) => {
         const newSet = new Set(visibleInfrastructure);
         if (isChecked) {
@@ -65,6 +77,14 @@ const Header: React.FC = () => {
         }
         const newVisibleCols = Array.from(newSet).sort((a, b) => filteredInfrastructure.indexOf(a) - filteredInfrastructure.indexOf(b));
         updateColumnVisibility(newVisibleCols);
+    };
+
+    const handleResetData = () => {
+        if (window.confirm("Are you sure you want to reset the demo? This will clear all local data and reload the application.")) {
+            localStorage.clear();
+            sessionStorage.clear();
+            window.location.reload();
+        }
     };
 
     const terminalNames: { [key: string]: string } = {
@@ -78,6 +98,7 @@ const Header: React.FC = () => {
         const activeOp = getOperationById(activeOpId);
         switch (currentView) {
             case 'dashboard': return 'Dashboard';
+            case 'orders': return 'Order Management';
             case 'planning': return 'Planning';
             case 'active-operations-list': return 'Active Operations';
             case 'completed': return 'Completed Operations';
@@ -87,6 +108,7 @@ const Header: React.FC = () => {
             case 'outage-planning': return 'Outage Planning';
             case 'maintenance': return 'Maintenance Work Orders';
             case 'manpower': return 'Manpower';
+            case 'terminal-simulation': return 'Live Terminal Overview';
             case 'operation-details': return `Op Details: ${activeOp?.transportId || '...'}`;
             case 'operation-plan': return `Edit Plan: ${activeOp?.transportId || 'New'}`;
             case 'special-services': return `Special Services: ${activeOp?.transportId || '...'}`;
@@ -103,12 +125,12 @@ const Header: React.FC = () => {
         }
     };
     
-    const showWorkspaceControls = ['dashboard', 'planning', 'active-operations-list', 'manpower'].includes(currentView);
+    const showWorkspaceControls = ['dashboard', 'planning', 'active-operations-list', 'manpower', 'orders'].includes(currentView);
     const showColumnFilter = ['planning', 'active-operations-list', 'manpower'].includes(currentView);
-    const showModalityFilter = ['planning', 'active-operations-list', 'manpower'].includes(currentView);
+    const showModalityFilter = ['planning', 'active-operations-list', 'manpower', 'orders'].includes(currentView);
 
     return (
-        <header className="relative z-30 bg-background-card text-text-primary py-3 px-4 sm:px-6 shadow-sm flex justify-between items-center border-b border-border-primary flex-shrink-0 gap-4">
+        <header className={`relative bg-background-card text-text-primary py-3 px-4 sm:px-6 shadow-sm flex justify-between items-center border-b border-border-primary flex-shrink-0 gap-4 ${isInfraFilterOpen ? 'z-50' : 'z-40'}`}>
             {/* Left Section: Navigation & Title */}
             <div className="flex items-center gap-3 sm:gap-4 min-w-0">
                 <button onClick={() => setIsSidebarOpen(true)} className="text-xl text-text-secondary lg:hidden">
@@ -144,7 +166,7 @@ const Header: React.FC = () => {
                                 <span className="hidden lg:inline">Columns</span> ({visibleInfrastructure.length}/{filteredInfrastructure.length})
                             </button>
                             {isInfraFilterOpen && showColumnFilter && (
-                                <div className="absolute top-full right-0 mt-2 w-72 bg-white border rounded-lg shadow-xl z-30 p-4">
+                                <div className="absolute top-full right-0 mt-2 w-72 bg-white border rounded-lg shadow-xl z-50 p-4">
                                     <div className="flex justify-between items-center mb-2">
                                         <button onClick={() => updateColumnVisibility(filteredInfrastructure)} className="text-xs text-blue-600 hover:underline font-semibold">Select All</button>
                                         <button onClick={() => updateColumnVisibility([])} className="text-xs text-blue-600 hover:underline font-semibold">Select None</button>
@@ -180,6 +202,10 @@ const Header: React.FC = () => {
                 <div className="hidden sm:flex items-center space-x-3 pl-3 border-l border-border-primary">
                     <button onClick={() => setIsTimePlaying(p => !p)} className="btn-secondary !py-2 !px-3" title={isTimePlaying ? "Pause Time" : "Play Time"}>
                         {isTimePlaying ? <i className="fas fa-pause"></i> : <i className="fas fa-play"></i>}
+                    </button>
+                    <button onClick={handleResetData} className="btn-secondary !py-2 !px-3 text-slate-500 hover:text-brand-primary" title="Reset Demo Data">
+                        <i className="fas fa-redo mr-1"></i>
+                        <span className="hidden xl:inline text-xs font-semibold">Reset</span>
                     </button>
                     <span className="text-sm text-text-secondary w-20 text-center font-mono font-semibold" title={`Simulated Time: ${simulatedTime.toLocaleString()}`}>
                         {simulatedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

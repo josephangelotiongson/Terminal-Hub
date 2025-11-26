@@ -1,10 +1,9 @@
 
-
 import React, { useContext, useState, useEffect, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { Operation, Transfer, TransferPlanItem, Modality, SpecialServiceData, Hold, ActivityLogItem, SOFItem } from '../types';
 import TankLevelIndicator from './TankLevelIndicator';
-import DateTimePicker from './DateTimePicker'; // Import the new component
+import DateTimePicker from './DateTimePicker';
 import CancelModal from './CancelModal';
 import { formatInfraName, validateOperationPlan, getOperationDurationHours, canReschedule, canEditPlan } from '../utils/helpers';
 import RequeuePriorityModal from './RequeuePriorityModal';
@@ -28,14 +27,27 @@ const MODALITY_DIRECTIONS: Record<Modality, string[]> = {
 
 const OperationPlan: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <div>Loading context...</div>;
-
-    const { activeOpId, saveCurrentPlan, goBack, switchView, settings, currentTerminalSettings, addActivityLog, cancelOperation, editingOp: plan, setEditingOp: setPlan, holds, requeueOperation, openRescheduleModal, currentUser } = context;
+    
+    // Safe defaults
+    const activeOpId = context?.activeOpId || null;
+    const saveCurrentPlan = context?.saveCurrentPlan || (() => {});
+    const goBack = context?.goBack || (() => {});
+    const switchView = context?.switchView || (() => {});
+    const settings = context?.settings || { productGroups: {}, compatibility: {}, modalityServices: {}, masterProducts: [] } as any;
+    const currentTerminalSettings = context?.currentTerminalSettings || { masterTanks: {}, infrastructureTankMapping: {}, customerMatrix: [], docklines: {} } as any;
+    const addActivityLog = context?.addActivityLog || (() => {});
+    const cancelOperation = context?.cancelOperation || (() => {});
+    const plan = context?.editingOp || null;
+    const setPlan = context?.setEditingOp || (() => {});
+    const holds = context?.holds || [];
+    const requeueOperation = context?.requeueOperation || (() => {});
+    const openRescheduleModal = context?.openRescheduleModal || (() => {});
+    const currentUser = context?.currentUser || { role: 'Operator', name: 'Unknown' };
 
     const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'transfers' | 'requirements' | 'services' | 'documents'>('transfers');
+    const [activeTab, setActiveTab] = useState<'transfers' | 'documents' | 'services'>('transfers');
     const [priorityModalOpen, setPriorityModalOpen] = useState(false);
-    // FIX: The `canReschedule` function expects only one argument (`user`), but was called with two. The second argument `plan` has been removed.
+    
     const canUserReschedule = canReschedule(currentUser);
     const isReadOnly = !canEditPlan(currentUser);
 
@@ -73,6 +85,8 @@ const OperationPlan: React.FC = () => {
         const activeHolds = holds.filter(h => h.status === 'approved' && h.workOrderStatus !== 'Closed');
         return validateOperationPlan(plan, currentTerminalSettings, settings, activeHolds);
     }, [plan, currentTerminalSettings, settings, holds]);
+
+    if (!context) return <div>Loading context...</div>;
 
     const handlePlanChange = (field: keyof Operation, value: any) => {
         if (!plan) return;
@@ -244,98 +258,22 @@ const OperationPlan: React.FC = () => {
         setIsCancelModalOpen(false);
     };
 
-    const availableVesselTransferServices = useMemo(() => {
-        const modServices = (settings.modalityServices && Array.isArray(settings.modalityServices.vessel)) ? settings.modalityServices.vessel : [];
-        const prodServices = Array.isArray(settings.productServices) ? settings.productServices : [];
-        return [...new Set([...modServices, ...prodServices])].sort();
-    }, [settings]);
-
-    const handleVesselTransferServiceChange = (lineIndex: number, transferIndex: number, serviceName: string, isChecked: boolean) => {
-        if (!plan) return;
-
-        setPlan(prevPlan => {
-            if (!prevPlan) return null;
-            const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
-            const transfer = newPlan.transferPlan[lineIndex]?.transfers[transferIndex];
-            if (!transfer) return newPlan;
-
-            const currentServices = transfer.specialServices || [];
-
-            if (isChecked) {
-                if (!currentServices.some(s => s.name === serviceName)) {
-                    transfer.specialServices = [...currentServices, { name: serviceName, data: {} }];
+    const handleServiceToggle = (serviceName: string, required: boolean) => {
+        setPlan(prev => {
+            if (!prev) return null;
+            const newOp = JSON.parse(JSON.stringify(prev)) as Operation;
+            if (!newOp.specialRequirements) newOp.specialRequirements = [];
+            
+            if (required) {
+                if (!newOp.specialRequirements.some(s => s.name === serviceName)) {
+                    newOp.specialRequirements.push({ name: serviceName, data: { status: 'pending' } });
                 }
             } else {
-                transfer.specialServices = currentServices.filter(s => s.name !== serviceName);
+                newOp.specialRequirements = newOp.specialRequirements.filter(s => s.name !== serviceName);
             }
-            
-            return newPlan;
+            return newOp;
         });
     };
-    
-    const handleRequirementChange = (requirementName: string, isChecked: boolean) => {
-        if (!plan) return;
-    
-        setPlan(prevPlan => {
-            if (!prevPlan) return null;
-            const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
-            const currentRequirements = newPlan.specialRequirements || [];
-            
-            if (isChecked) {
-                if (!currentRequirements.some(r => r.name === requirementName)) {
-                    newPlan.specialRequirements = [...currentRequirements, { name: requirementName, data: {} }];
-                }
-            } else {
-                newPlan.specialRequirements = currentRequirements.filter(r => r.name !== requirementName);
-            }
-            return newPlan;
-        });
-    };
-
-    const availableModalityServices = useMemo(() => {
-        if (!plan || plan.modality === 'vessel') return [];
-        const modServices = (settings.modalityServices && Array.isArray(settings.modalityServices[plan.modality])) ? settings.modalityServices[plan.modality] : [];
-        const prodServices = Array.isArray(settings.productServices) ? settings.productServices : [];
-        return [...new Set([...modServices, ...prodServices])].sort();
-    }, [settings, plan]);
-
-    const handleModalityServiceChange = (serviceName: string, isChecked: boolean) => {
-        if (!plan) return;
-        
-        // Assuming services are on the first transfer for trucks/rail
-        const lineIndex = 0;
-        const transferIndex = 0;
-
-        setPlan(prevPlan => {
-            if (!prevPlan) return null;
-            const newPlan = JSON.parse(JSON.stringify(prevPlan)) as Operation;
-
-            if (!newPlan.transferPlan[lineIndex]) {
-                newPlan.transferPlan[lineIndex] = { infrastructureId: '', transfers: [] };
-            }
-            if (!newPlan.transferPlan[lineIndex].transfers[transferIndex]) {
-                const direction = MODALITY_DIRECTIONS[newPlan.modality][0] || '';
-                newPlan.transferPlan[lineIndex].transfers[transferIndex] = {
-                    customer: '', product: '', from: '', 
-                    to: (newPlan.modality === 'truck' && direction === 'Tank to Truck') ? newPlan.transportId : '',
-                    tonnes: 0, direction, specialServices: []
-                };
-            }
-            
-            const currentServices = newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices || [];
-
-            if (isChecked) {
-                if (!currentServices.some(s => s.name === serviceName)) {
-                    newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices = [...currentServices, { name: serviceName, data: {} }];
-                }
-            } else {
-                newPlan.transferPlan[lineIndex].transfers[transferIndex].specialServices = currentServices.filter(s => s.name !== serviceName);
-            }
-
-            return newPlan;
-        });
-    };
-
 
     if (!plan) {
         return <div className="card text-center p-8">Loading operation plan...</div>;
@@ -345,12 +283,6 @@ const OperationPlan: React.FC = () => {
     const availableDirections = MODALITY_DIRECTIONS[plan.modality] || [];
     const allInfrastructureForModality = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {})
         .filter(key => currentTerminalSettings.infrastructureModalityMapping[key] === plan.modality);
-    
-    const availableVesselServices = useMemo(() => {
-        return Array.isArray(settings.vesselServices) ? settings.vesselServices : [];
-    }, [settings.vesselServices]);
-
-    const selectedModalityServices = (plan.transferPlan[0]?.transfers[0]?.specialServices || []).map(s => s.name);
     
     return (
         <>
@@ -448,16 +380,9 @@ const OperationPlan: React.FC = () => {
                             <button onClick={() => setActiveTab('transfers')} className={`tab ${activeTab === 'transfers' ? 'active' : ''}`}>
                                 {plan.modality === 'truck' ? 'Transfer Details' : 'Infrastructure & Transfers'}
                             </button>
-                            {plan.modality === 'vessel' && (
-                                <button onClick={() => setActiveTab('requirements')} className={`tab ${activeTab === 'requirements' ? 'active' : ''}`}>
-                                    Vessel Services
-                                </button>
-                            )}
-                             {(plan.modality === 'truck' || plan.modality === 'rail') && (
-                                <button onClick={() => setActiveTab('services')} className={`tab ${activeTab === 'services' ? 'active' : ''}`}>
-                                    Services
-                                </button>
-                            )}
+                            <button onClick={() => setActiveTab('services')} className={`tab ${activeTab === 'services' ? 'active' : ''}`}>
+                                Services
+                            </button>
                             <button onClick={() => setActiveTab('documents')} className={`tab ${activeTab === 'documents' ? 'active' : ''}`}>
                                 Documents ({(plan.documents || []).length})
                             </button>
@@ -587,29 +512,6 @@ const OperationPlan: React.FC = () => {
                                                         {plan.modality !== 'truck' && <button onClick={() => handleRemoveTransfer(lineIndex, transferIndex)} className="btn-icon danger" title="Remove Transfer" disabled={isReadOnly}><i className="fas fa-times"></i></button>}
                                                     </div>
 
-                                                    {plan.modality === 'vessel' && (
-                                                        <div className="mt-4 pt-4 border-t">
-                                                            <h5 className="font-semibold text-text-secondary text-sm mb-2">Transfer Services</h5>
-                                                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                                                                {availableVesselTransferServices.map(service => {
-                                                                    const isChecked = transfer.specialServices.some(s => s.name === service);
-                                                                    return (
-                                                                        <label key={service} className="flex items-center space-x-2 p-1 rounded-md hover:bg-gray-50 cursor-pointer">
-                                                                            <input
-                                                                                type="checkbox"
-                                                                                className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
-                                                                                checked={isChecked}
-                                                                                onChange={(e) => handleVesselTransferServiceChange(lineIndex, transferIndex, service, e.target.checked)}
-                                                                                disabled={isReadOnly}
-                                                                            />
-                                                                            <span className="text-xs font-medium text-gray-700">{service}</span>
-                                                                        </label>
-                                                                    );
-                                                                })}
-                                                            </div>
-                                                        </div>
-                                                    )}
-
                                                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 mt-4">
                                                         <div>
                                                             <label>Customer</label>
@@ -698,23 +600,23 @@ const OperationPlan: React.FC = () => {
                             </div>
                         )}
 
-                        {activeTab === 'requirements' && plan.modality === 'vessel' && (
-                            <div>
-                                <h3 className="text-xl font-semibold text-text-primary mb-4">Vessel Services</h3>
-                                <p className="text-sm text-text-secondary mb-4">Select all services that apply to this vessel operation.</p>
-                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                                    {availableVesselServices.map(req => {
-                                        const isChecked = plan.specialRequirements?.some(r => r.name === req) ?? false;
+                        {activeTab === 'services' && (
+                            <div className="card p-6">
+                                <h3 className="font-semibold text-lg mb-4">Standard Services for {plan.modality.charAt(0).toUpperCase() + plan.modality.slice(1)}</h3>
+                                <p className="text-sm text-text-secondary mb-4">Select services required for this operation.</p>
+                                <div className="space-y-2">
+                                    {(settings.modalityServices?.[plan.modality] || []).map(serviceName => {
+                                        const isSelected = plan.specialRequirements?.some(s => s.name === serviceName);
                                         return (
-                                            <label key={req} className="flex items-center space-x-3 p-2 rounded-md hover:bg-gray-50 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
-                                                    checked={isChecked}
-                                                    onChange={(e) => handleRequirementChange(req, e.target.checked)}
+                                            <label key={serviceName} className="flex items-center space-x-3 p-3 border rounded-lg hover:bg-slate-50 cursor-pointer">
+                                                <input 
+                                                    type="checkbox" 
+                                                    checked={isSelected} 
+                                                    onChange={(e) => handleServiceToggle(serviceName, e.target.checked)}
                                                     disabled={isReadOnly}
+                                                    className="h-5 w-5 rounded border-gray-300 text-brand-primary focus:ring-brand-primary"
                                                 />
-                                                <span className="text-sm font-medium text-gray-700">{req}</span>
+                                                <span className="font-medium text-text-primary">{serviceName}</span>
                                             </label>
                                         );
                                     })}
@@ -722,29 +624,6 @@ const OperationPlan: React.FC = () => {
                             </div>
                         )}
 
-                        {activeTab === 'services' && (plan.modality === 'truck' || plan.modality === 'rail') && (
-                            <div>
-                                <h3 className="text-xl font-semibold text-text-primary mb-4">Special Services</h3>
-                                <p className="text-sm text-text-secondary mb-4">Select all services that apply to this {plan.modality} operation.</p>
-                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                                    {availableModalityServices.map(service => {
-                                        const isChecked = selectedModalityServices.includes(service);
-                                        return (
-                                            <label key={service} className="flex items-center space-x-3 p-2 rounded-md hover:bg-gray-50 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    className="h-4 w-4 text-brand-primary border-gray-300 rounded focus:ring-brand-primary"
-                                                    checked={isChecked}
-                                                    onChange={(e) => handleModalityServiceChange(service, e.target.checked)}
-                                                    disabled={isReadOnly}
-                                                />
-                                                <span className="text-sm font-medium text-gray-700">{service}</span>
-                                            </label>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
                         {activeTab === 'documents' && (
                             <DocumentManager operation={plan} onUpdate={handleDocumentUpdate as any} isReadOnly={isReadOnly}/>
                         )}

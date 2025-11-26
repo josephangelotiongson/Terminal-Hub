@@ -12,16 +12,18 @@ interface TankDetailsModalProps {
 
 const TankDetailsModal: React.FC<TankDetailsModalProps> = ({ isOpen, onClose, tankId }) => {
     const context = useContext(AppContext);
-    if (!context || !tankId) return null;
-
-    const { operations, holds, currentTerminalSettings } = context;
-    const tankData = currentTerminalSettings.masterTanks?.[tankId];
+    
+    // Hook must be called unconditionally. We use default empty values if context is missing to proceed safely.
+    const operations = context?.operations || [];
+    const holds = context?.holds || [];
+    const currentTerminalSettings = context?.currentTerminalSettings || { masterTanks: {}, infrastructureTankMapping: {}, customerMatrix: [] };
+    
+    const tankData = tankId && currentTerminalSettings.masterTanks ? currentTerminalSettings.masterTanks[tankId] : undefined;
 
     const { connectedInfra, customerMappings, relatedOps, outageHistory } = useMemo(() => {
-        if (!tankId) return { connectedInfra: [], customerMappings: [], relatedOps: [], outageHistory: [] };
+        if (!tankId || !currentTerminalSettings.masterTanks) return { connectedInfra: [], customerMappings: [], relatedOps: [], outageHistory: [] };
 
         const infra = Object.entries(currentTerminalSettings.infrastructureTankMapping || {})
-            // FIX: Add Array.isArray check to ensure 'tanks' is an array before calling .includes(), resolving a TypeScript error where 'tanks' was of type 'unknown'.
             .filter(([, tanks]) => Array.isArray(tanks) && tanks.includes(tankId))
             .map(([infraId]) => infraId);
 
@@ -43,7 +45,8 @@ const TankDetailsModal: React.FC<TankDetailsModalProps> = ({ isOpen, onClose, ta
         };
     }, [tankId, currentTerminalSettings, operations, holds]);
 
-    if (!tankData) return null;
+    // Early return AFTER all hooks
+    if (!context || !tankId || !tankData) return null;
 
     return (
         <Modal 

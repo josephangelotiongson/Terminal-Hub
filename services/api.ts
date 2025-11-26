@@ -4,26 +4,32 @@ import { createMockOperations, createMockHolds } from './mockData';
 import { createMockHistoricalOperations } from './mockHistoricalData';
 import { DEFAULT_SETTINGS } from './masterData';
 
+const OPS_KEY = 'term_hub_ops_v1';
+const SETTINGS_KEY = 'term_hub_settings_v1';
+const HOLDS_PREFIX = 'term_hub_holds_v1_';
+
 const loadOperations = (): Operation[] => {
-    // Try to load from localStorage first
-    try {
-        const storedOps = localStorage.getItem('all_ops_data');
-        if (storedOps) {
-            return JSON.parse(storedOps);
+    // Try to load from local storage first
+    const stored = localStorage.getItem(OPS_KEY);
+    if (stored) {
+        try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                return parsed;
+            }
+        } catch (e) {
+            console.error("Failed to parse stored operations", e);
         }
-    } catch (error) {
-        console.error('Failed to load operations from localStorage', error);
-        // If parsing fails, proceed to generate fresh data
     }
     
-    // Generate fresh data if nothing in storage or parsing failed
+    // If no valid stored data, generate fresh
     const liveOps = createMockOperations();
     const historicalOps = createMockHistoricalOperations();
     const allOps = [...historicalOps, ...liveOps];
     
     // Save the newly generated data to localStorage for session persistence
     try {
-        localStorage.setItem('all_ops_data', JSON.stringify(allOps));
+        localStorage.setItem(OPS_KEY, JSON.stringify(allOps));
     } catch (error) {
         console.error('Failed to save initial operations to localStorage', error);
     }
@@ -33,24 +39,25 @@ const loadOperations = (): Operation[] => {
 
 const saveOperations = (operations: Operation[]): void => {
     try {
-        localStorage.setItem('all_ops_data', JSON.stringify(operations));
+        localStorage.setItem(OPS_KEY, JSON.stringify(operations));
     } catch (error) {
         console.error('Failed to save operations to localStorage', error);
     }
 };
 
 const loadSettings = (): AppSettings => {
-    try {
-        const storedSettings = localStorage.getItem('settings_data');
-        if (storedSettings) {
-            return JSON.parse(storedSettings);
+    const stored = localStorage.getItem(SETTINGS_KEY);
+    if (stored) {
+        try {
+            return JSON.parse(stored);
+        } catch (e) {
+            console.error("Failed to parse stored settings", e);
         }
-    } catch (error) {
-        console.error('Failed to load settings from localStorage', error);
     }
+
     // Save default if nothing is in storage
     try {
-        localStorage.setItem('settings_data', JSON.stringify(DEFAULT_SETTINGS));
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(DEFAULT_SETTINGS));
     } catch (error) {
         console.error('Failed to save initial settings to localStorage', error);
     }
@@ -59,26 +66,27 @@ const loadSettings = (): AppSettings => {
 
 const saveSettings = (settings: AppSettings): void => {
     try {
-        localStorage.setItem('settings_data', JSON.stringify(settings));
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     } catch (error) {
         console.error('Failed to save settings to localStorage', error);
     }
 };
 
 const loadHolds = (terminal: string): Hold[] => {
-    try {
-        const storedHolds = localStorage.getItem(`holds_data_${terminal}`);
-        if (storedHolds) {
-            return JSON.parse(storedHolds);
+    const key = `${HOLDS_PREFIX}${terminal}`;
+    const stored = localStorage.getItem(key);
+    if (stored) {
+        try {
+            return JSON.parse(stored);
+        } catch (e) {
+            console.error("Failed to parse stored holds", e);
         }
-    } catch (error) {
-        console.error('Failed to load holds from localStorage', error);
     }
 
     const mockHolds = createMockHolds(terminal);
     // Save the initial mock data so it's available on next load
     try {
-        localStorage.setItem(`holds_data_${terminal}`, JSON.stringify(mockHolds));
+        localStorage.setItem(key, JSON.stringify(mockHolds));
     } catch (error) {
         console.error('Failed to save initial holds to localStorage', error);
     }
@@ -86,8 +94,9 @@ const loadHolds = (terminal: string): Hold[] => {
 };
 
 const saveHolds = (holds: Hold[], terminal: string): void => {
+    const key = `${HOLDS_PREFIX}${terminal}`;
     try {
-        localStorage.setItem(`holds_data_${terminal}`, JSON.stringify(holds));
+        localStorage.setItem(key, JSON.stringify(holds));
     } catch (error) {
         console.error('Failed to save holds to localStorage', error);
     }

@@ -1,3 +1,4 @@
+
 import React, { useContext, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 
@@ -55,13 +56,14 @@ const TankVisualizer: React.FC<{ current: number; capacity: number }> = ({ curre
 
 const TankStatus: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { tanks, switchView } = context;
+    const tanks = context?.tanks || {};
+    const switchView = context?.switchView || (() => {});
 
     const sortedTanks = useMemo(() => {
-        return Object.entries(tanks || {}).sort(([nameA], [nameB]) => nameA.localeCompare(nameB, undefined, { numeric: true }));
+        return Object.entries(tanks).sort(([nameA], [nameB]) => nameA.localeCompare(nameB, undefined, { numeric: true }));
     }, [tanks]);
+
+    if (!context) return null;
 
     return (
         <div className="p-4 sm:p-6 space-y-6">

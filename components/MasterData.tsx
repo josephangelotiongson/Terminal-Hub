@@ -1,7 +1,7 @@
 import React, { useContext, useState, useMemo } from 'react';
 import { AppContext } from '../context/AppContext';
 import { AppSettings, Modality, TerminalSettings, CalibrationPoint } from '../types';
-import InputModal from './InputModal'; // Import the new component
+import InputModal from './InputModal';
 import ConfirmModal from './ConfirmModal';
 import { formatInfraName, naturalSort, createDocklineToWharfMap } from '../utils/helpers';
 import CalibrationModal from './CalibrationModal';
@@ -50,101 +50,24 @@ const ListDataManager: React.FC<{
     );
 };
 
-const ServicesManager: React.FC = () => {
-    const context = useContext(AppContext);
-    if (!context) return null;
-
-    const { settings, setSettings } = context;
-
-    const handleAddService = (category: 'vesselServices' | 'productServices' | `modalityServices.${Modality}`, service: string) => {
-        setSettings(prev => {
-            const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
-            if (category.startsWith('modalityServices')) {
-                const modality = category.split('.')[1] as Modality;
-                if (!newSettings.modalityServices[modality]) {
-                    newSettings.modalityServices[modality] = [];
-                }
-                newSettings.modalityServices[modality].push(service);
-                newSettings.modalityServices[modality].sort();
-            } else {
-                if (!newSettings[category]) {
-                    newSettings[category] = [];
-                }
-                (newSettings[category] as string[]).push(service);
-                (newSettings[category] as string[]).sort();
-            }
-            return newSettings;
-        });
-    };
-
-    const handleDeleteService = (category: 'vesselServices' | 'productServices' | `modalityServices.${Modality}`, service: string) => {
-         setSettings(prev => {
-            const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
-            if (category.startsWith('modalityServices')) {
-                const modality = category.split('.')[1] as Modality;
-                newSettings.modalityServices[modality] = newSettings.modalityServices[modality].filter((s: string) => s !== service);
-            } else {
-                (newSettings[category] as string[]) = (newSettings[category] as string[]).filter((s: string) => s !== service);
-            }
-            return newSettings;
-        });
-    };
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <ListDataManager
-                title="Vessel Services"
-                items={settings.vesselServices || []}
-                onAdd={(service) => handleAddService('vesselServices', service)}
-                onDelete={(service) => handleDeleteService('vesselServices', service)}
-                noun="Vessel Service"
-            />
-            <ListDataManager
-                title="Product Services"
-                items={settings.productServices || []}
-                onAdd={(service) => handleAddService('productServices', service)}
-                onDelete={(service) => handleDeleteService('productServices', service)}
-                noun="Product Service"
-            />
-             <div className="card h-full flex flex-col p-6 space-y-4">
-                 <ListDataManager
-                    title="Truck Services"
-                    items={settings.modalityServices?.truck || []}
-                    onAdd={(service) => handleAddService('modalityServices.truck', service)}
-                    onDelete={(service) => handleDeleteService('modalityServices.truck', service)}
-                    noun="Truck Service"
-                />
-                 <ListDataManager
-                    title="Rail Services"
-                    items={settings.modalityServices?.rail || []}
-                    onAdd={(service) => handleAddService('modalityServices.rail', service)}
-                    onDelete={(service) => handleDeleteService('modalityServices.rail', service)}
-                    noun="Rail Service"
-                />
-                 <ListDataManager
-                    title="Vessel Transfer Services"
-                    items={settings.modalityServices?.vessel || []}
-                    onAdd={(service) => handleAddService('modalityServices.vessel', service)}
-                    onDelete={(service) => handleDeleteService('modalityServices.vessel', service)}
-                    noun="Transfer Service"
-                />
-            </div>
-        </div>
-    );
-};
-
-type MasterDataView = 'products' | 'customers' | 'tanks' | 'infrastructure' | 'services';
+type MasterDataView = 'products' | 'customers' | 'tanks' | 'infrastructure';
 
 const MasterData: React.FC = () => {
     const context = useContext(AppContext);
-    if (!context) return <div>Loading...</div>;
+    
+    // Safe defaults
+    const settings = context?.settings || { compatibility: {}, masterProducts: [], productGroups: {} };
+    const currentTerminalSettings = context?.currentTerminalSettings || { docklines: {}, assetHolds: {}, infrastructureTankMapping: {}, infrastructureModalityMapping: {}, masterTanks: {}, masterCustomers: [] };
+    const setSettings = context?.setSettings || (() => {});
+    const currentUser = context?.currentUser || { name: 'Unknown' };
+    const operations = context?.operations || [];
+    const selectedTerminal = context?.selectedTerminal || '';
 
-    const { settings, setSettings, selectedTerminal, currentTerminalSettings, currentUser, operations } = context;
     const [activeView, setActiveView] = useState<MasterDataView>('products');
     
     // Edit States
     const [editingCustomer, setEditingCustomer] = useState<{ oldName: string, newName: string } | null>(null);
-    const [editingTank, setEditingTank] = useState<{ name: string, capacity: string } | null>(null);
+    const [editingTank, setEditingTank] = useState<{ name: string, capacity: string, group: string, productCompatibilityGroup: string } | null>(null);
     const [editingInfra, setEditingInfra] = useState<{ id: string, lastProduct: string } | null>(null);
     const [editingCalibration, setEditingCalibration] = useState<string | null>(null);
 
@@ -154,6 +77,8 @@ const MasterData: React.FC = () => {
     const [newCustomerName, setNewCustomerName] = useState('');
     const [newTankName, setNewTankName] = useState('');
     const [newTankCapacity, setNewTankCapacity] = useState('');
+    const [newTankGroup, setNewTankGroup] = useState('');
+    const [newTankProductCompatibilityGroup, setNewTankProductCompatibilityGroup] = useState('');
     const [newInfraId, setNewInfraId] = useState('');
     const [newInfraModality, setNewInfraModality] = useState<Modality | ''>('');
     
@@ -177,7 +102,12 @@ const MasterData: React.FC = () => {
             docklineToWharfMap: dtlwMap,
         };
     }, [currentTerminalSettings]);
+    
+    const availableProductCompatibilityGroups = useMemo(() => {
+        return Object.keys(settings.compatibility || {}).sort();
+    }, [settings.compatibility]);
 
+    if (!context) return <div>Loading...</div>;
 
     const handleSettingChange = (key: keyof TerminalSettings, value: any) => {
         setSettings(prev => {
@@ -207,7 +137,10 @@ const MasterData: React.FC = () => {
          if (!editingTank) return;
          setSettings(prev => {
             const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
-            newSettings[selectedTerminal].masterTanks[editingTank.name].capacity = parseInt(editingTank.capacity) || 0;
+            const tank = newSettings[selectedTerminal].masterTanks[editingTank.name];
+            tank.capacity = parseInt(editingTank.capacity) || 0;
+            tank.group = editingTank.group || undefined;
+            tank.productCompatibilityGroup = editingTank.productCompatibilityGroup || undefined;
             return newSettings;
         });
         setEditingTank(null);
@@ -218,11 +151,19 @@ const MasterData: React.FC = () => {
         if (!newTankName || !capacity) return alert('Tank Name and a valid Capacity are required.');
         setSettings(prev => {
             const newSettings = JSON.parse(JSON.stringify(prev)) as AppSettings;
-            newSettings[selectedTerminal].masterTanks[newTankName] = { capacity, current: 0, calibrationData: [] };
+            newSettings[selectedTerminal].masterTanks[newTankName] = { 
+                capacity, 
+                current: 0, 
+                group: newTankGroup || undefined, 
+                productCompatibilityGroup: newTankProductCompatibilityGroup || undefined,
+                calibrationData: [] 
+            };
             return newSettings;
         });
         setNewTankName('');
         setNewTankCapacity('');
+        setNewTankGroup('');
+        setNewTankProductCompatibilityGroup('');
     };
     
     const toggleTankHold = (tankName: string) => {
@@ -474,24 +415,48 @@ const MasterData: React.FC = () => {
                              <h3 className="text-xl font-semibold text-text-primary mb-2">Tanks & Holds ({selectedTerminal})</h3>
                               <div className="pt-2 pb-4 border-b mb-4">
                                  <h4 className="font-semibold text-lg text-text-primary mb-2">Add New Tank</h4>
-                                 <div className="flex gap-2">
-                                     <input type="text" value={newTankName} onChange={e => setNewTankName(e.target.value)} placeholder="New Tank Name (e.g. D05)" />
-                                     <input type="number" value={newTankCapacity} onChange={e => setNewTankCapacity(e.target.value)} placeholder="Capacity (Tonnes)" />
-                                     <button onClick={handleAddTank} className="btn-primary">Add</button>
+                                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
+                                     <input type="text" value={newTankName} onChange={e => setNewTankName(e.target.value)} placeholder="Tank Name (e.g. D05)" />
+                                     <input type="number" value={newTankCapacity} onChange={e => setNewTankCapacity(e.target.value)} placeholder="Capacity (T)" />
+                                     <input type="text" value={newTankGroup} onChange={e => setNewTankGroup(e.target.value)} placeholder="Group (Optional)" />
+                                     <select 
+                                        value={newTankProductCompatibilityGroup} 
+                                        onChange={e => setNewTankProductCompatibilityGroup(e.target.value)}
+                                        className="text-sm"
+                                    >
+                                        <option value="">Compatibility Grp...</option>
+                                        {availableProductCompatibilityGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                                    </select>
+                                     <button onClick={handleAddTank} className="btn-primary md:col-span-4">Add</button>
                                  </div>
                               </div>
                               <div className="space-y-2 max-h-[400px] overflow-y-auto p-1 mb-4">
                                 {Object.entries(currentTerminalSettings.masterTanks || {}).map(([tankName, tankData]) => {
-                                     const typedTankData = tankData as { capacity: number; current: number };
+                                     const typedTankData = tankData as { capacity: number; current: number; group?: string; productCompatibilityGroup?: string };
                                      const hold = currentTerminalSettings.tankHolds?.[tankName];
                                      return (
                                         <div key={tankName} className={`p-3 rounded-md flex justify-between items-center ${hold?.active ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
-                                            <div>
+                                            <div className="flex-grow">
                                                 <p className={`font-bold text-base ${hold?.active ? 'text-red-800' : 'text-gray-800'}`}>{tankName}</p>
                                                 {editingTank?.name === tankName ? (
-                                                    <input type="number" value={editingTank.capacity} onChange={e => setEditingTank(editingTank ? {...editingTank, capacity: e.target.value } : null)} className="!py-1 !px-2 w-32 mt-1" />
+                                                    <div className="flex gap-2 mt-1 flex-wrap">
+                                                        <input type="number" value={editingTank.capacity} onChange={e => setEditingTank(editingTank ? {...editingTank, capacity: e.target.value } : null)} className="!py-1 !px-2 w-24" placeholder="Cap" />
+                                                        <input type="text" value={editingTank.group} onChange={e => setEditingTank(editingTank ? {...editingTank, group: e.target.value } : null)} className="!py-1 !px-2 w-32" placeholder="Group" />
+                                                        <select 
+                                                            value={editingTank.productCompatibilityGroup} 
+                                                            onChange={e => setEditingTank(editingTank ? {...editingTank, productCompatibilityGroup: e.target.value } : null)}
+                                                            className="!py-1 !px-2 w-32 text-xs"
+                                                        >
+                                                            <option value="">Compatibility...</option>
+                                                            {availableProductCompatibilityGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                                                        </select>
+                                                    </div>
                                                 ) : (
-                                                    <p className="text-sm text-gray-500">{typedTankData.capacity.toLocaleString()} T Capacity</p>
+                                                    <p className="text-sm text-gray-500">
+                                                        {typedTankData.capacity.toLocaleString()} T 
+                                                        {typedTankData.group && <span className="ml-2 bg-slate-100 px-1.5 rounded border text-xs font-semibold">{typedTankData.group}</span>}
+                                                        {typedTankData.productCompatibilityGroup && <span className="ml-2 bg-blue-50 text-blue-700 px-1.5 rounded border border-blue-200 text-xs">{typedTankData.productCompatibilityGroup}</span>}
+                                                    </p>
                                                 )}
                                                 {hold?.active && <p className="text-sm font-semibold text-red-600">ON HOLD: {hold.reason}</p>}
                                             </div>
@@ -502,7 +467,7 @@ const MasterData: React.FC = () => {
                                                     <button onClick={() => setEditingTank(null)} className="btn-icon" title="Cancel"><i className="fas fa-times text-xs"></i></button>
                                                     </>
                                                 ) : (
-                                                    <button onClick={() => setEditingTank({ name: tankName, capacity: String(typedTankData.capacity) })} className="btn-icon" title="Edit Capacity"><i className="fas fa-pen text-xs"></i></button>
+                                                    <button onClick={() => setEditingTank({ name: tankName, capacity: String(typedTankData.capacity), group: typedTankData.group || '', productCompatibilityGroup: typedTankData.productCompatibilityGroup || '' })} className="btn-icon" title="Edit Details"><i className="fas fa-pen text-xs"></i></button>
                                                 )}
                                                 <button onClick={() => setEditingCalibration(tankName)} className="btn-secondary !text-xs !py-1 !px-2">Calibrate</button>
                                                 <button onClick={() => toggleTankHold(tankName)} className={`!py-2 !px-4 text-sm ${hold?.active ? 'btn-danger' : 'btn-secondary'}`}>
@@ -599,8 +564,6 @@ const MasterData: React.FC = () => {
                         </div>
                     </>
                 );
-            case 'services':
-                return <ServicesManager />;
             default:
                 return null;
         }
@@ -642,7 +605,6 @@ const MasterData: React.FC = () => {
                         <button onClick={() => setActiveView('customers')} className={`tab ${activeView === 'customers' ? 'active' : ''}`}>Customers</button>
                         <button onClick={() => setActiveView('tanks')} className={`tab ${activeView === 'tanks' ? 'active' : ''}`}>Tanks</button>
                         <button onClick={() => setActiveView('infrastructure')} className={`tab ${activeView === 'infrastructure' ? 'active' : ''}`}>Infrastructure</button>
-                        <button onClick={() => setActiveView('services')} className={`tab ${activeView === 'services' ? 'active' : ''}`}>Services</button>
                     </nav>
                 </div>
             </div>

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useContext } from 'react';
+
+import React, { useState, useEffect, useContext, useMemo } from 'react';
 import Modal from './Modal';
 import { Hold } from '../types';
 import DateTimePicker from './DateTimePicker';
 import { AppContext } from '../context/AppContext';
-import { formatInfraName } from '../utils/helpers';
+import { formatInfraName, naturalSort } from '../utils/helpers';
 
 interface HoldModalProps {
     isOpen: boolean;
@@ -37,8 +38,16 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
     const [reason, setReason] = useState(HOLD_REASONS[0]);
     const [customReason, setCustomReason] = useState('');
     
-    const allInfrastructure = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {});
-    const connectedTanks = currentTerminalSettings.infrastructureTankMapping?.[resource] || [];
+    const allResources = useMemo(() => {
+        const infra = Object.keys(currentTerminalSettings.infrastructureModalityMapping || {});
+        const tanks = Object.keys(currentTerminalSettings.masterTanks || {});
+        const intermediates = currentTerminalSettings.masterIntermediates || [];
+        return Array.from(new Set([...infra, ...tanks, ...intermediates])).sort(naturalSort);
+    }, [currentTerminalSettings]);
+
+    const connectedTanks = useMemo(() => {
+        return currentTerminalSettings.infrastructureTankMapping?.[resource] || [];
+    }, [resource, currentTerminalSettings]);
 
     const canCreate = ['Operations Lead', 'Operator'].includes(currentUser.role);
     const canEdit = ['Operations Lead', 'Terminal Planner', 'Maintenance Planner'].includes(currentUser.role) || initialData.user === currentUser.name;
@@ -69,7 +78,7 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
             return;
         }
         if (!resource) {
-            alert("Please select an infrastructure resource.");
+            alert("Please select an asset/resource.");
             return;
         }
         if (!startTime || !endTime || new Date(startTime) >= new Date(endTime)) {
@@ -100,6 +109,8 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
         title = initialData.id ? 'Edit Outage Request' : 'Request New Outage';
     }
 
+    const isTankSelected = resource in (currentTerminalSettings.masterTanks || {});
+
     return (
         <Modal
             isOpen={isOpen}
@@ -122,8 +133,8 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
             <div className="space-y-4">
                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label>Infrastructure</label>
-                        {initialData.resource ? (
+                        <label>Asset / Infrastructure</label>
+                        {initialData.id && initialData.resource ? (
                             <p className="font-semibold text-lg p-2 bg-slate-100 rounded-md">{formatInfraName(initialData.resource)}</p>
                         ) : (
                             <select
@@ -131,21 +142,21 @@ const HoldModal: React.FC<HoldModalProps> = ({ isOpen, onClose, onSave, initialD
                                 onChange={(e) => setResource(e.target.value)}
                                 className="mt-1"
                             >
-                                <option value="">Select Infrastructure...</option>
-                                {allInfrastructure.map(infra => <option key={infra} value={infra}>{formatInfraName(infra)}</option>)}
+                                <option value="">Select Asset...</option>
+                                {allResources.map(res => <option key={res} value={res}>{formatInfraName(res)}</option>)}
                             </select>
                         )}
                     </div>
                      <div>
-                        <label>Tank (for lineup outage)</label>
+                        <label>Sub-Component (Optional)</label>
                         <select
                             value={tank}
                             onChange={(e) => setTank(e.target.value)}
                             className="mt-1"
-                            disabled={!resource || connectedTanks.length === 0}
+                            disabled={!resource || connectedTanks.length === 0 || isTankSelected}
                         >
-                            <option value="">Full Infrastructure Outage</option>
-                            {connectedTanks.map(t => <option key={t} value={t}>{t}</option>)}
+                            <option value="">Full Asset Outage</option>
+                            {connectedTanks.map(t => <option key={t} value={t}>Line to {t}</option>)}
                         </select>
                     </div>
                 </div>

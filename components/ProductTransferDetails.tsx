@@ -1,5 +1,4 @@
 
-
 import React, { useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { AppContext } from '../context/AppContext';
 import { SOFItem, SpecialServiceData, Transfer, Operation, DipSheetEntry, ActivityLogItem, ScadaData, HoseLogEntry, SampleLogEntry, PressureCheckLogEntry } from '../types';
@@ -11,8 +10,9 @@ import HoseLogModal from './HoseLogModal';
 import SampleLogModal from './SampleLogModal';
 import SofDetailsModal from './SofDetailsModal';
 import PressureCheckModal from './PressureCheckModal';
+import ServiceSlider from './ServiceSlider';
 
-// --- NEW SLIDER COMPONENT ---
+// --- ROBUST SLIDER COMPONENT ---
 const SofSlider: React.FC<{
     status: 'in-progress' | 'complete';
     onComplete: () => void;
@@ -20,76 +20,55 @@ const SofSlider: React.FC<{
 }> = ({ status, onComplete, onUndo }) => {
     const trackRef = useRef<HTMLDivElement>(null);
     const thumbRef = useRef<HTMLDivElement>(null);
-    const isDraggingRef = useRef(false);
-    const startXRef = useRef(0);
-    const currentTranslateXRef = useRef(0);
+    const [isDragging, setIsDragging] = useState(false);
 
-    // This handles native MouseEvent and TouchEvent
-    const getClientX = (e: MouseEvent | TouchEvent): number => {
-        if (e instanceof MouseEvent) {
-            return e.clientX;
-        }
-        if (window.TouchEvent && e instanceof TouchEvent) {
-            if (e.touches.length > 0) {
-                return e.touches[0].clientX;
-            }
-            if (e.changedTouches.length > 0) {
-                return e.changedTouches[0].clientY;
-            }
-        }
-        return 0;
-    };
-    
-    // These will be attached to window, so they need to handle native events
-    const handleDragMove = (e: MouseEvent | TouchEvent) => {
-        if (!isDraggingRef.current || !trackRef.current || !thumbRef.current) return;
-    
-        const currentX = getClientX(e);
-        const deltaX = currentX - startXRef.current;
-        
-        const trackWidth = trackRef.current.offsetWidth;
-        const thumbWidth = thumbRef.current.offsetWidth;
-        const maxTranslate = trackWidth - thumbWidth;
-    
-        let newTranslateX: number;
-        if (status === 'in-progress') {
-            newTranslateX = Math.max(0, Math.min(deltaX, maxTranslate));
-        } else { // 'complete'
-            newTranslateX = maxTranslate + Math.min(0, Math.max(deltaX, -maxTranslate));
-        }
-        
-        currentTranslateXRef.current = newTranslateX;
-        thumbRef.current.style.transform = `translateX(${newTranslateX}px)`;
-    };
-
-    const handleDragEnd = (e: MouseEvent | TouchEvent) => {
-        if (!isDraggingRef.current) return;
-        isDraggingRef.current = false;
-        
-        // Clean up all global listeners
-        window.removeEventListener('mousemove', handleDragMove);
-        window.removeEventListener('mouseup', handleDragEnd);
-        window.removeEventListener('touchmove', handleDragMove);
-        window.removeEventListener('touchend', handleDragEnd);
-
+    const handlePointerDown = (e: React.PointerEvent) => {
         if (!thumbRef.current || !trackRef.current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+        thumbRef.current.setPointerCapture(e.pointerId);
+        thumbRef.current.style.transition = 'none';
+    };
 
-        thumbRef.current.style.transition = ''; // Re-enable transition for snapping back
-        
-        const trackWidth = trackRef.current.offsetWidth;
+    const handlePointerMove = (e: React.PointerEvent) => {
+        if (!isDragging || !trackRef.current || !thumbRef.current) return;
+        e.preventDefault();
+
+        const trackRect = trackRef.current.getBoundingClientRect();
         const thumbWidth = thumbRef.current.offsetWidth;
-        const maxTranslate = trackWidth - thumbWidth;
-        const triggerThreshold = maxTranslate * 0.7;
+        const maxTranslate = trackRect.width - thumbWidth;
+        
+        let newX = e.clientX - trackRect.left - (thumbWidth / 2);
+        newX = Math.max(0, Math.min(newX, maxTranslate));
+
+        thumbRef.current.style.transform = `translateX(${newX}px)`;
+    };
+
+    const handlePointerUp = (e: React.PointerEvent) => {
+        if (!isDragging || !trackRef.current || !thumbRef.current) return;
+        
+        setIsDragging(false);
+        thumbRef.current.releasePointerCapture(e.pointerId);
+        thumbRef.current.style.transition = 'transform 0.2s ease-out';
+
+        const trackRect = trackRef.current.getBoundingClientRect();
+        const thumbWidth = thumbRef.current.offsetWidth;
+        const maxTranslate = trackRect.width - thumbWidth;
+        
+        let currentX = e.clientX - trackRect.left - (thumbWidth / 2);
+        currentX = Math.max(0, Math.min(currentX, maxTranslate));
+
+        const threshold = maxTranslate * 0.7;
 
         if (status === 'in-progress') {
-            if (currentTranslateXRef.current > triggerThreshold) {
+            if (currentX > threshold) {
                 onComplete();
-                // Let the useEffect handle the final position based on new 'status' prop
             } else {
-                thumbRef.current.style.transform = `translateX(0px)`;
+                thumbRef.current.style.transform = 'translateX(0px)';
             }
-        } else { // 'complete'
-            if (currentTranslateXRef.current < maxTranslate - triggerThreshold) {
+        } else {
+            if (currentX < maxTranslate - threshold) {
                 onUndo();
             } else {
                 thumbRef.current.style.transform = `translateX(${maxTranslate}px)`;
@@ -97,58 +76,26 @@ const SofSlider: React.FC<{
         }
     };
 
-    // This handles React's SyntheticEvent
-    const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => {
-        // This prevents default scrolling/selection behavior on touch which is crucial for iOS
-        if ('touches' in e.nativeEvent) {
-             e.preventDefault();
-        }
-        if (!thumbRef.current) return;
-        
-        isDraggingRef.current = true;
-        startXRef.current = getClientX(e.nativeEvent);
-        thumbRef.current.style.transition = 'none'; // Disable transition during drag
-        
-        if (e.nativeEvent instanceof MouseEvent) {
-            window.addEventListener('mousemove', handleDragMove);
-            window.addEventListener('mouseup', handleDragEnd);
-        } else if (window.TouchEvent && e.nativeEvent instanceof TouchEvent) {
-            // Adding global listeners for touch is the key fix for mobile.
-            window.addEventListener('touchmove', handleDragMove);
-            window.addEventListener('touchend', handleDragEnd);
-        }
-    };
-    
     useEffect(() => {
         if (thumbRef.current && trackRef.current) {
             const maxTranslate = trackRef.current.offsetWidth - thumbRef.current.offsetWidth;
-            // This useEffect will correctly set the initial position and also handle the final position after a successful onComplete()
             thumbRef.current.style.transform = status === 'complete' ? `translateX(${maxTranslate}px)` : 'translateX(0px)';
         }
-    }, [status]); // Only run when status changes.
-
-    // On unmount, make sure to clean up any lingering listeners if a drag is interrupted
-    useEffect(() => {
-        return () => {
-            window.removeEventListener('mousemove', handleDragMove);
-            window.removeEventListener('mouseup', handleDragEnd);
-            window.removeEventListener('touchmove', handleDragMove);
-            window.removeEventListener('touchend', handleDragEnd);
-        };
-    }, []);
-
+    }, [status]);
 
     return (
         <div
-            className="sof-slider-track"
+            className="sof-slider-track touch-none"
             ref={trackRef}
-            onMouseDown={handleDragStart}
-            onTouchStart={handleDragStart}
         >
             {status === 'complete' && <i className="fas fa-undo sof-slider-target-icon"></i>}
             <div
                 ref={thumbRef}
-                className="sof-slider-thumb"
+                className="sof-slider-thumb cursor-grab active:cursor-grabbing"
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
             >
                 <i className={`fas ${status === 'in-progress' ? 'fa-arrow-right' : 'fa-check'} sof-slider-icon`}></i>
             </div>
@@ -251,6 +198,7 @@ interface ProductTransferDetailsProps {
     lineIndex?: number;
     transferIndex?: number;
     setActiveTab?: (tab: 'sof' | 'lineCleaning' | 'services' | 'shippingLog' | 'documents' | 'auditLog' | 'arrivalChecklist') => void;
+    activeTab?: 'sof' | 'lineCleaning' | 'services' | 'shippingLog' | 'documents' | 'auditLog' | 'arrivalChecklist';
 }
 
 const CompactTankIndicator: React.FC<{ tankName: string; transferVolume: number; transferDirection: 'in' | 'out' }> = ({ tankName, transferVolume, transferDirection }) => {
@@ -301,19 +249,110 @@ const CompactTankIndicator: React.FC<{ tankName: string; transferVolume: number;
     );
 };
 
-const ProductTransferDetails: React.FC<ProductTransferDetailsProps> = ({ lineIndex: lineIndexProp, transferIndex: transferIndexProp, setActiveTab }) => {
+const TransferProgressBar: React.FC<{
+    operation: Operation;
+    transfer: Transfer;
+}> = ({ operation, transfer }) => {
+    const { simulatedTime } = useContext(AppContext)!;
+
+    const {
+        progressPct,
+        pumpRate,
+        etc,
+        plannedCompletionMarkerPct,
+        isOvertime
+    } = useMemo(() => {
+        const sof = transfer.sof || [];
+        const maxLoop = Math.max(1, ...sof.map(s => s.loop));
+        const currentLoopSof = sof.filter(s => s.loop === maxLoop);
+        
+        const pumpingStartedEvent = currentLoopSof.find(s => s.event.includes('Pumping Started') && s.status === 'complete');
+        if (!pumpingStartedEvent) {
+            return { progressPct: 0, pumpRate: 0, etc: 'N/A', plannedCompletionMarkerPct: null, isOvertime: false };
+        }
+
+        const startTime = new Date(pumpingStartedEvent.time).getTime();
+        const now = simulatedTime.getTime();
+        const elapsedHours = (now - startTime) / (1000 * 60 * 60);
+
+        if (elapsedHours <= 0) {
+            return { progressPct: 0, pumpRate: 0, etc: 'N/A', plannedCompletionMarkerPct: null, isOvertime: false };
+        }
+        
+        const transferred = transfer.transferredTonnes || 0;
+        const total = transfer.tonnes || 1;
+        
+        const progress = Math.min(100, (transferred / total) * 100);
+        const rate = transferred / elapsedHours;
+        
+        const remainingTonnes = total - transferred;
+        const etcHours = remainingTonnes > 0 && rate > 0 ? remainingTonnes / rate : 0;
+        
+        const etcMinutes = Math.round(etcHours * 60);
+        const etcString = etcMinutes > 0 ? `${etcMinutes} min` : '< 1 min';
+        
+        const plannedDurationHours = operation.durationHours || 1;
+        const projectedTotalHours = elapsedHours + etcHours;
+        
+        const markerPct = (plannedDurationHours / projectedTotalHours) * 100;
+        
+        const overTime = projectedTotalHours > plannedDurationHours;
+
+        return {
+            progressPct: progress,
+            pumpRate: rate,
+            etc: etcString,
+            plannedCompletionMarkerPct: markerPct > 100 ? null : markerPct, // Don't show if already past planned time
+            isOvertime: overTime,
+        };
+    }, [transfer, operation.durationHours, simulatedTime]);
+
+    return (
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <div className="grid grid-cols-3 gap-4 text-center text-sm">
+                <div>
+                    <p className="font-semibold text-text-secondary">Pump Rate</p>
+                    <p className="font-bold text-lg text-brand-dark">{pumpRate.toFixed(0)} T/hr</p>
+                </div>
+                <div>
+                    <p className="font-semibold text-text-secondary">Progress</p>
+                    <p className="font-bold text-lg text-brand-dark">{progressPct.toFixed(1)}%</p>
+                </div>
+                <div>
+                    <p className="font-semibold text-text-secondary">Est. Time Remaining</p>
+                    <p className={`font-bold text-lg ${isOvertime ? 'text-red-600 animate-pulse' : 'text-brand-dark'}`}>{etc}</p>
+                </div>
+            </div>
+            <div className="relative w-full h-3 bg-slate-200 rounded-full mt-3">
+                <div className="h-full bg-brand-primary rounded-full transition-all duration-500" style={{ width: `${progressPct}%` }}></div>
+                {plannedCompletionMarkerPct !== null && (
+                    <div 
+                        className="absolute top-0 h-full w-0.5 bg-slate-500 border-l border-r border-dashed border-white" 
+                        style={{ left: `${plannedCompletionMarkerPct}%` }}
+                        title={`Planned completion time (${(operation.durationHours || 0).toFixed(2)} hrs)`}
+                    ></div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+
+const ProductTransferDetails: React.FC<ProductTransferDetailsProps> = ({ lineIndex: lineIndexProp, transferIndex: transferIndexProp, setActiveTab, activeTab = 'sof' }) => {
     const context = useContext(AppContext);
-    if (!context) return <div>Loading...</div>;
-
-    const { activeLineIndex, activeTransferIndex, currentUser, editingOp: plan, setEditingOp: setPlan, currentTerminalSettings, scadaData, saveCurrentPlan, getOperationById, directTruckToBay, revertCallOff, simulatedTime, updateTransferServiceStatus } = context;
     
-    const lineIndex = lineIndexProp ?? activeLineIndex;
-    const transferIndex = transferIndexProp ?? activeTransferIndex;
-
-    const transfer = useMemo(() => {
-        if (!plan || lineIndex === null || transferIndex === null) return null;
-        return plan.transferPlan[lineIndex]?.transfers[transferIndex];
-    }, [plan, lineIndex, transferIndex]);
+    // Safe defaults
+    const activeLineIndex = context?.activeLineIndex;
+    const activeTransferIndex = context?.activeTransferIndex;
+    const currentUser = context?.currentUser || { name: 'Unknown', role: 'Operator' };
+    const plan = context?.editingOp || null;
+    const setPlan = context?.setEditingOp || (() => {});
+    const currentTerminalSettings = context?.currentTerminalSettings || { infrastructureModalityMapping: {} };
+    const settings = context?.settings || { modalityServices: {} };
+    const scadaData = context?.scadaData || {};
+    const saveCurrentPlan = context?.saveCurrentPlan || (() => {});
+    const directTruckToBay = context?.directTruckToBay || (() => {});
+    const simulatedTime = context?.simulatedTime || new Date();
 
     const [infoModal, setInfoModal] = useState({ isOpen: false, title: '', message: '' });
     const [undoModalState, setUndoModalState] = useState<{ isOpen: boolean; item: SOFItem | null, type: 'commodity' | 'cleaning' }>({ isOpen: false, item: null, type: 'commodity' });
@@ -325,34 +364,67 @@ const ProductTransferDetails: React.FC<ProductTransferDetailsProps> = ({ lineInd
     const [isHoseLogModalOpen, setIsHoseLogModalOpen] = useState(false);
     const [isSampleLogModalOpen, setIsSampleLogModalOpen] = useState(false);
     const [isPressureCheckModalOpen, setIsPressureCheckModalOpen] = useState(false);
-    
+
+    const lineIndex = lineIndexProp ?? activeLineIndex;
+    const transferIndex = transferIndexProp ?? activeTransferIndex;
+
+    const transfer = useMemo(() => {
+        if (!plan || lineIndex === null || transferIndex === null) return null;
+        return plan.transferPlan[lineIndex]?.transfers[transferIndex];
+    }, [plan, lineIndex, transferIndex]);
+
+    const isPumping = useMemo(() => {
+        if (!plan || (plan.modality !== 'truck' && plan.modality !== 'rail')) return false;
+
+        const transfer = plan.transferPlan?.[lineIndex!]?.transfers?.[transferIndex!];
+        if (!transfer?.sof) return false;
+
+        const maxLoop = Math.max(1, ...transfer.sof.map(s => s.loop));
+        const currentLoopSof = transfer.sof.filter(s => s.loop === maxLoop);
+
+        const pumpingStarted = currentLoopSof.some(s => s.event.includes('Pumping Started') && s.status === 'complete');
+        const pumpingStopped = currentLoopSof.some(s => s.event.includes('Pumping Stopped') && s.status === 'complete');
+
+        return pumpingStarted && !pumpingStopped;
+    }, [plan, lineIndex, transferIndex]);
+
+    if (!context) return <div>Loading...</div>;
+
     if (!plan || !transfer || lineIndex === null || transferIndex === null) {
         return <div className="text-center p-8"><h2 className="text-xl font-semibold">Transfer Not Found</h2><p>Please go back and select a transfer to view its details.</p></div>;
     }
 
-    const forceSyncPlan = () => {
-        if (plan?.id) {
-            const masterOp = getOperationById(plan.id);
-            // Deep copy from masterOp to ensure we have a mutable copy for editing, breaking reference
-            if (masterOp && JSON.stringify(masterOp) !== JSON.stringify(plan)) {
-                setPlan(JSON.parse(JSON.stringify(masterOp)));
-            }
-        }
-    };
-
     const handleHoseLogClose = () => {
         setIsHoseLogModalOpen(false);
-        forceSyncPlan();
     };
 
     const handlePressureCheckClose = () => {
         setIsPressureCheckModalOpen(false);
-        forceSyncPlan();
     };
 
     const handleSampleLogClose = () => {
         setIsSampleLogModalOpen(false);
-        forceSyncPlan();
+    };
+
+    const handleServiceStatusChange = (serviceName: string, status: 'pending' | 'complete') => {
+        setPlan(prev => {
+            if (!prev) return null;
+            const newOp = JSON.parse(JSON.stringify(prev)) as Operation;
+            const existingIndex = (newOp.specialRequirements || []).findIndex((s: SpecialServiceData) => s.name === serviceName);
+            
+            if (existingIndex > -1) {
+                newOp.specialRequirements[existingIndex].data = { ...newOp.specialRequirements[existingIndex].data, status };
+            } else {
+                if (!newOp.specialRequirements) newOp.specialRequirements = [];
+                newOp.specialRequirements.push({ name: serviceName, data: { status } });
+            }
+            
+            const logAction = status === 'complete' ? 'SERVICE_COMPLETE' : 'SERVICE_RESET';
+            const logDetail = status === 'complete' ? `Service "${serviceName}" marked as complete.` : `Service "${serviceName}" reset to pending.`;
+            newOp.activityHistory.push({ time: simulatedTime.toISOString(), user: currentUser.name, action: logAction, details: logDetail });
+            
+            return newOp;
+        });
     };
 
     const handleSofClick = (eventName: string, loop: number) => {
@@ -757,22 +829,43 @@ const ProductTransferDetails: React.FC<ProductTransferDetailsProps> = ({ lineInd
                         <p><strong className="font-semibold text-text-secondary">From:</strong> {transfer.from}</p>
                         <p><strong className="font-semibold text-text-secondary">To:</strong> {transfer.to}</p>
                     </div>
-                     {tankName && <CompactTankIndicator tankName={tankName} transferVolume={transfer.tonnes} transferDirection={isIncoming ? 'in' : 'out'} />}
+                    {isPumping && <TransferProgressBar operation={plan} transfer={transfer} />}
+                    {tankName && <CompactTankIndicator tankName={tankName} transferVolume={transfer.tonnes} transferDirection={isIncoming ? 'in' : 'out'} />}
                 </div>
             </div>
             <div className="p-4 sm:p-6">
                 <div className="space-y-4">
-                    {hasCleaning && (
+                    {activeTab === 'services' && (
+                        <div className="space-y-2">
+                            {(settings.modalityServices?.[plan.modality] || []).map(serviceName => {
+                                // Get service object from plan if it exists, or create dummy for display
+                                const existing = plan.specialRequirements?.find(s => s.name === serviceName);
+                                const serviceObj = existing || { name: serviceName, data: { status: 'pending' } };
+                                
+                                return (
+                                    <ServiceSlider 
+                                        key={serviceName}
+                                        service={serviceObj}
+                                        context="Standard Service"
+                                        onStatusChange={(status) => handleServiceStatusChange(serviceName, status)}
+                                    />
+                                );
+                            })}
+                        </div>
+                    )}
+                    {activeTab === 'sof' && hasCleaning && (
                         <div className={`p-4 border rounded-lg ${isCleaningDone ? 'bg-green-50' : 'bg-orange-50'}`}>
                             <h4 className="font-bold text-base mb-2">{isCleaningDone ? <><i className="fas fa-check-circle text-green-600 mr-2"></i>Line Cleaning Complete</> : 'Line Cleaning Required'}</h4>
                             <SofSection sofItems={transfer.preTransferCleaningSof!} onSofClick={handleCleaningSofClick} activeStepEvent={getActiveSofEvent(transfer.preTransferCleaningSof!, false)} onDisabledClick={handleDisabledClick} onUndoClick={(item) => { setOptimisticUndoEvent(item.event); setUndoModalState({ isOpen: true, item, type: 'cleaning' }); }} onEditClick={(item) => setEditingSof(item)} optimisticUndoEvent={optimisticUndoEvent} pendingCompletionEvent={pendingCompletionEvent} setInfoModal={setInfoModal} />
                         </div>
                     )}
-                    <SofSection sofItems={transfer.sof || []} onSofClick={handleSofClick} activeStepEvent={activeSofEvent} onDisabledClick={handleDisabledClick} onUndoClick={(item) => { setOptimisticUndoEvent(item.event); setUndoModalState({ isOpen: true, item, type: 'commodity' }); }} onEditClick={(item) => setEditingSof(item)} optimisticUndoEvent={optimisticUndoEvent} pendingCompletionEvent={pendingCompletionEvent} setInfoModal={setInfoModal} />
+                    {activeTab === 'sof' && (
+                        <SofSection sofItems={transfer.sof || []} onSofClick={handleSofClick} activeStepEvent={activeSofEvent} onDisabledClick={handleDisabledClick} onUndoClick={(item) => { setOptimisticUndoEvent(item.event); setUndoModalState({ isOpen: true, item, type: 'commodity' }); }} onEditClick={(item) => setEditingSof(item)} optimisticUndoEvent={optimisticUndoEvent} pendingCompletionEvent={pendingCompletionEvent} setInfoModal={setInfoModal} />
+                    )}
                 </div>
             </div>
         </div>
     );
 };
-// FIX: Add default export to make the component importable.
+
 export default ProductTransferDetails;

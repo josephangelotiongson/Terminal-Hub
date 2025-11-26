@@ -1,6 +1,10 @@
 
 
 
+
+
+
+
 import { Operation, SOFItem, Transfer, AppSettings, Modality, CalibrationPoint, TerminalSettings, Hold, OperationStatus, User } from '../types';
 import { SOF_EVENTS_MODALITY, VESSEL_COMMON_EVENTS, VESSEL_COMMODITY_EVENTS } from '../constants';
 
@@ -679,6 +683,25 @@ export const getLatestSofTimestamp = (op: Operation): string => {
     return completedSteps[0].time;
 };
 
+export const getEarliestSofTimestamp = (op: Operation): string | null => {
+    const allSof = [
+        ...(op.sof || []),
+        ...(op.transferPlan || []).flatMap(tp => (tp.transfers || []).flatMap(t => t.sof || []))
+    ];
+    
+    // Find completed steps with a valid time
+    const completedSteps = allSof.filter(s => s.status === 'complete' && s.time);
+    
+    if (completedSteps.length === 0) {
+        return null;
+    }
+    
+    // Sort to find the earliest time
+    completedSteps.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    
+    return completedSteps[0].time;
+};
+
 export const getOperationColorClass = (op: Operation): string => {
     // Priority 1: Issues that require attention
     if (op.status === 'cancelled' || op.delay?.active || op.currentStatus === 'Reschedule Required' || op.currentStatus === 'No Show' || op.truckStatus === 'Rejected' || op.currentStatus === 'Reschedule Requested') {
@@ -781,4 +804,32 @@ export const createDocklineToWharfMap = (terminalSettings: TerminalSettings): Re
         }
     });
     return mapping;
+};
+
+// --- NEW HELPERS FOR VESSEL TRANSFER STATUS ---
+
+export const getVesselTransferStatus = (transfer: Transfer): string => {
+    const sof = transfer.sof || [];
+    
+    const hasStarted = sof.some(s => s.event.includes('START PUMPING') && s.status === 'complete');
+    const hasStopped = sof.some(s => s.event.includes('STOP PUMPING') && s.status === 'complete');
+    const isConnected = sof.some(s => s.event.includes('HOSE CONNECTED') && s.status === 'complete');
+    const samplesPassed = sof.some(s => s.event.includes('SLOPS SAMPLE PASSED') && s.status === 'complete');
+
+    if (hasStopped) return 'Completed';
+    if (hasStarted && !hasStopped) return 'Pumping';
+    if (samplesPassed) return 'Ready';
+    if (isConnected) return 'Connected';
+    return 'Planned';
+};
+
+export const getVesselTransferColorClass = (transfer: Transfer): string => {
+    const status = getVesselTransferStatus(transfer);
+    switch (status) {
+        case 'Pumping': return 'status-loading';
+        case 'Completed': return 'status-departed';
+        case 'Connected': return 'status-arrived';
+        case 'Ready': return 'status-approved';
+        default: return 'status-planned';
+    }
 };

@@ -1,7 +1,7 @@
 
 import { Modality } from './types';
 
-export const MOCK_CURRENT_TIME = new Date('2024-07-25T10:00:00.000Z');
+export const MOCK_CURRENT_TIME = new Date();
 
 export const VESSEL_COMMON_EVENTS: string[] = [
     'START PREPARATIONS / CREW ONSITE',
